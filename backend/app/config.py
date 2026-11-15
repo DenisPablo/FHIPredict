@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     openmeteo_url: str = "https://api.open-meteo.com/v1/forecast"
     forecast_days: int = Field(default=15, ge=1, le=16)
     past_days: int = Field(default=30, ge=29, le=60)
-    cache_ttl_s: int = Field(default=3600, ge=60)
+    cache_ttl_s: int = Field(default=10800, ge=60)
+    refresh_interval_s: int = Field(default=10800, ge=300)
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     chunk_size: int = Field(default=100, ge=1, le=200)
     max_concurrency: int = Field(default=1, ge=1, le=4)

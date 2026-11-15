@@ -23,11 +23,14 @@ async def lifespan(app: FastAPI):
     global _service
     _service = ForecastService(get_settings())
     warmup_task = asyncio.create_task(_service.warm_up())
+    refresh_task = asyncio.create_task(_service.run_periodic_refresh())
     try:
         yield
     finally:
-        if not warmup_task.done():
-            warmup_task.cancel()
+        for task in (warmup_task, refresh_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(warmup_task, refresh_task, return_exceptions=True)
 
 
 def create_app() -> FastAPI:

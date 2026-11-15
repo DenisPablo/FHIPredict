@@ -203,6 +203,19 @@ class ForecastService:
         except Exception as exc:
             logger.warning("Startup forecast warm-up failed: %s", exc)
 
+    async def run_periodic_refresh(self, interval_s: float | None = None) -> None:
+        """Periodically refresh Open-Meteo weather and re-score cells in the background."""
+        sleep_s = float(interval_s if interval_s is not None else self.settings.refresh_interval_s)
+        while True:
+            await asyncio.sleep(sleep_s)
+            try:
+                await self._refresh_forecast(force_refresh=True)
+                logger.info("Periodic Open-Meteo forecast refresh completed")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Periodic forecast refresh failed: %s", exc)
+
     async def get_forecast(self, force_refresh: bool = False) -> CachedForecast:
         now = time.monotonic()
         if not force_refresh and self._cache is not None:

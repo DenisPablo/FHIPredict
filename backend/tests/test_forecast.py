@@ -71,3 +71,37 @@ def test_predict_with_stability_and_confidence_decay():
     assert np.all(pct_day0 > pct_stale)
     assert lvl_day0[0] == "Alta"
     assert lvl_day14[0] in ("Media", "Baja")
+
+
+def test_periodic_refresh_recovers_from_error_and_stops():
+    import asyncio
+    from app.service import ForecastService
+
+    models_dir = Path(__file__).resolve().parents[1] / "models"
+    svc = ForecastService(Settings(models_dir=models_dir))
+
+    calls = 0
+
+    async def fake_refresh(force_refresh: bool = False):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient 429")
+        return svc._cache
+
+    svc._refresh_forecast = fake_refresh  # type: ignore[method-assign]
+
+    async def runner():
+        task = asyncio.create_task(svc.run_periodic_refresh(interval_s=0.01))
+        for _ in range(30):
+            if calls >= 2:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(runner())
+    assert calls >= 2

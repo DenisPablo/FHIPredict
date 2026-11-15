@@ -1,6 +1,6 @@
 import { Suspense, lazy, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ExternalLink, Flame, Globe, Loader2 } from 'lucide-react';
+import { ExternalLink, Globe, Loader2 } from 'lucide-react';
 import { fetchForecast, type RiskCategory } from './api/forecast';
 import type { FlyTarget } from './components/RiskMap';
 import { RiskLegend } from './components/RiskLegend';
@@ -53,9 +53,11 @@ export function App() {
       {/* Top floating header */}
       <header className="pointer-events-none absolute inset-x-4 top-4 z-10 flex flex-wrap items-start justify-between gap-3">
         <div className="pointer-events-auto flex items-center gap-3 rounded-2xl border border-space-border bg-space-surface/95 px-4 py-2.5 shadow-xl backdrop-blur-md">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-lime-brand/15 text-lime-brand">
-            <Flame className="h-4 w-4" />
-          </div>
+          <img
+            src="/logo-fhi.png"
+            alt="Fire History Interface"
+            className="h-9 w-9 shrink-0 rounded-full object-cover"
+          />
           <div>
             <h1 className="font-title text-sm font-extrabold tracking-tight text-fcText-primary">
               {t.title}

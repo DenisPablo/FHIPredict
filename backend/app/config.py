@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     chunk_size: int = Field(default=100, ge=1, le=200)
     max_concurrency: int = Field(default=1, ge=1, le=4)
+    enable_spread: bool = True
 
 
 @lru_cache

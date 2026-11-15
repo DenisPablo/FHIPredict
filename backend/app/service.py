@@ -14,6 +14,14 @@ import numpy as np
 from .config import Settings
 from .openmeteo import WeatherGridForecast, fetch_openmeteo_grid
 from .predictor import FireRiskPredictor
+from .spread import (
+    NeighborGraph,
+    SpreadPredictor,
+    aggregate_target_probabilities,
+    build_neighbor_graph,
+    compute_wind_alignment,
+    fuse_risk_and_spread,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +94,13 @@ class ForecastService:
         self.settings = settings
         self.predictor = FireRiskPredictor.from_bundle(settings.models_dir / "fire_risk_bundle.joblib")
         self.baseline = load_baseline((settings.models_dir / "cell_baseline.parquet").as_posix())
+        spread_bundle = settings.models_dir / "spread_bundle.joblib"
+        self.spread_predictor: SpreadPredictor | None = (
+            SpreadPredictor.from_bundle(spread_bundle)
+            if settings.enable_spread and spread_bundle.exists()
+            else None
+        )
+        self._neighbor_graph: NeighborGraph | None = None
         self._cache_path: Path = settings.models_dir / ".forecast_cache.joblib"
         self._cache: CachedForecast | None = self._load_disk_cache()
         self._lock = asyncio.Lock()
@@ -310,6 +325,176 @@ class ForecastService:
                 "fecha_desde": fecha_desde,
                 "fecha_hasta": fecha_hasta,
                 "dates_available": cached.dates,
+                "counts": counts,
+                "returned": len(features),
+            },
+            "features": features,
+        }
+
+    def get_neighbor_graph(self) -> NeighborGraph:
+        if self._neighbor_graph is None:
+            b = self.baseline
+            self._neighbor_graph = build_neighbor_graph(
+                cell_id=b.cell_id,
+                lat_centro=b.lat_centro,
+                lon_centro=b.lon_centro,
+                elevacion_m=b.elevacion_m,
+            )
+        return self._neighbor_graph
+
+    def query_spread_geojson(
+        self,
+        cached: CachedForecast,
+        horizon_hours: int = 24,
+        day_offset: int = 0,
+        min_risk: str = "Moderado",
+        bbox: tuple[float, float, float, float] | None = None,
+    ) -> dict:
+        """Compute neighbor propagation probabilities for active or high-risk source cells."""
+        if self.spread_predictor is None:
+            raise RuntimeError("Spread model (`spread_bundle.joblib`) is not loaded")
+
+        b = self.baseline
+        n_cells = len(b.cell_id)
+        n_avail = len(cached.dates)
+        idx = max(0, min(day_offset, n_avail - 1))
+        horizon_days = max(1, min(3, horizon_hours // 24))
+        end_idx = min(n_avail - 1, idx + horizon_days - 1)
+
+        p_risk = cached.probs[:, idx]
+        # Active sources: cells with recent fire memory OR extreme/high predicted risk today
+        active_source_mask = (b.focos_ultimos_7d >= 1.0) | (p_risk >= self.predictor.risk_cutoffs["Alto"])
+        graph = self.get_neighbor_graph()
+
+        edge_mask = active_source_mask[graph.src_idx]
+        s_idx = graph.src_idx[edge_mask]
+        t_idx = graph.dst_idx[edge_mask]
+
+        if len(s_idx) == 0:
+            p_spread = np.zeros(n_cells, dtype=np.float32)
+        else:
+            dt = datetime.strptime(cached.dates[idx], "%Y-%m-%d")
+            mes_val = float(dt.month)
+            doy_val = float(dt.timetuple().tm_yday)
+            n_edges = len(s_idx)
+
+            # Neighborhood summary per target cell
+            act_nbr_cnt = np.zeros(n_cells, dtype=np.float32)
+            nbr_focos_sum = np.zeros(n_cells, dtype=np.float32)
+            nbr_frp_sum = np.zeros(n_cells, dtype=np.float32)
+            s_focos = np.maximum(b.focos_ultimos_7d[s_idx], 1.0)
+            s_frp = np.maximum(b.frp_ultimos_7d[s_idx], 10.0)
+            np.add.at(act_nbr_cnt, t_idx, 1.0)
+            np.add.at(nbr_focos_sum, t_idx, s_focos)
+            np.add.at(nbr_frp_sum, t_idx, s_frp)
+
+            g_t = b.cell_to_grid[t_idx]
+            g_s = b.cell_to_grid[s_idx]
+            w = cached.weather
+
+            X_pairs = np.column_stack([
+                b.lat_centro[t_idx],
+                b.lon_centro[t_idx],
+                np.full(n_edges, mes_val, dtype=np.float32),
+                np.full(n_edges, doy_val, dtype=np.float32),
+                np.full(n_edges, float(horizon_days), dtype=np.float32),
+                graph.dist_km[edge_mask],
+                graph.sin_bearing[edge_mask],
+                graph.cos_bearing[edge_mask],
+                graph.delta_elev_m[edge_mask],
+                graph.slope_deg[edge_mask],
+                s_focos,
+                s_frp,
+                b.focos_ultimos_7d[s_idx],
+                b.focos_ultimos_7d[t_idx],
+                b.focos_ultimos_30d[t_idx],
+                b.frp_ultimos_7d[t_idx],
+                b.clim_months[t_idx, dt.month - 1],
+                b.anios_desde_ultimo_fuego[t_idx],
+                act_nbr_cnt[t_idx],
+                nbr_focos_sum[t_idx],
+                nbr_frp_sum[t_idx],
+                b.elevacion_m[t_idx],
+                w.temperature_2m_max[g_t, idx],
+                w.relative_humidity_2m[g_t, idx],
+                w.wind_speed_10m_max[g_t, idx],
+                w.precipitation_sum[g_t, idx],
+                w.shortwave_radiation_sum[g_t, idx],
+                w.lluvia_acum_7d[g_t, idx],
+                w.lluvia_acum_15d[g_t, idx],
+                w.lluvia_acum_30d[g_t, idx],
+                w.dias_consecutivos_sin_lluvia[g_t, idx],
+                w.vpd_approx[g_t, idx],
+            ])
+
+            wind_align = None
+            if w.wind_direction_10m_dominant is not None:
+                wind_align = compute_wind_alignment(
+                    w.wind_direction_10m_dominant[g_s, idx],
+                    graph.bearing_deg[edge_mask],
+                )
+            pair_probs = self.spread_predictor.predict_pair_probabilities(
+                X_pairs,
+                wind_alignment=wind_align,
+                wind_speed_kmh=w.wind_speed_10m_max[g_s, idx],
+            )
+            p_spread = aggregate_target_probabilities(n_cells, t_idx, pair_probs)
+
+        p_fused = fuse_risk_and_spread(p_risk, p_spread)
+        cats = self.spread_predictor.categorize(p_spread)
+        counts = {
+            "Bajo": int(np.sum(cats == "Bajo")),
+            "Moderado": int(np.sum(cats == "Moderado")),
+            "Alto": int(np.sum(cats == "Alto")),
+            "Extremo": int(np.sum(cats == "Extremo")),
+        }
+
+        min_rank = RISK_ORDER.get(min_risk, 1)
+        ranks = np.where(cats == "Extremo", 3, np.where(cats == "Alto", 2, np.where(cats == "Moderado", 1, 0)))
+        mask = (ranks >= min_rank) & (p_spread > 0.0)
+        if bbox is not None:
+            west, south, east, north = bbox
+            mask &= (
+                (b.lon_centro >= west)
+                & (b.lon_centro <= east)
+                & (b.lat_centro >= south)
+                & (b.lat_centro <= north)
+            )
+
+        sel = np.nonzero(mask)[0]
+        if len(sel) > 20_000:
+            top = np.argpartition(p_spread[sel], -20_000)[-20_000:]
+            sel = sel[top]
+
+        features = [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [round(float(b.lon_centro[i]), 4), round(float(b.lat_centro[i]), 4)],
+                },
+                "properties": {
+                    "cell_id": int(b.cell_id[i]),
+                    "propagacion_pct": round(float(p_spread[i]) * 100.0, 2),
+                    "riesgo_base_pct": round(float(p_risk[i]) * 100.0, 2),
+                    "riesgo_fusionado_pct": round(float(p_fused[i]) * 100.0, 2),
+                    "categoria": str(cats[i]),
+                    "horizon_hours": int(horizon_days * 24),
+                },
+            }
+            for i in sel.tolist()
+        ]
+
+        return {
+            "type": "FeatureCollection",
+            "meta": {
+                "model_version": self.spread_predictor.model_version,
+                "baseline_model_version": self.predictor.model_version,
+                "generated_at": cached.generated_at,
+                "horizon_hours": int(horizon_days * 24),
+                "fecha_desde": cached.dates[idx],
+                "fecha_hasta": cached.dates[end_idx],
+                "active_source_cells": int(np.sum(active_source_mask)),
                 "counts": counts,
                 "returned": len(features),
             },

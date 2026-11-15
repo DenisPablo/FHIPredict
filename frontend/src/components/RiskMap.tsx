@@ -3,7 +3,7 @@ import { Mountain, Route } from 'lucide-react';
 import * as maplibregl from 'maplibre-gl';
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import type { ForecastResponse, RiskCategory } from '../api/forecast';
+import type { ConfidenceLevel, ForecastResponse, RiskCategory } from '../api/forecast';
 import { COPY, type Lang } from '../i18n';
 
 maplibregl.setWorkerUrl(maplibreWorkerUrl);
@@ -155,6 +155,21 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
         const latStr = lat.toFixed(4);
         const lonStr = lon.toFixed(4);
         const mapsUrl = `https://www.google.com/maps?q=${latStr},${lonStr}`;
+        const confLevel =
+          typeof p.confianza_nivel === 'string'
+            ? (p.confianza_nivel as ConfidenceLevel)
+            : undefined;
+        const confPct = typeof p.confianza_pct === 'number' ? p.confianza_pct : undefined;
+        const confColor =
+          confLevel === 'Alta'
+            ? '#B8EE68'
+            : confLevel === 'Media'
+              ? '#68D9D0'
+              : '#FF9C55';
+        const confRow =
+          confPct !== undefined && confLevel
+            ? `<div title="${t.popup.confidenceHint}" style="display:flex;align-items:center;justify-content:space-between;font-family:'DM Mono',monospace;font-size:10px;color:#93A39C;margin-bottom:6px;cursor:help;"><span>${t.popup.confidence}</span><span style="color:${confColor};font-weight:600;">${t.popup.confidenceLevels[confLevel] ?? confLevel} · ${Math.round(confPct)}%</span></div>`
+            : '';
         const meta = latestDataRef.current?.meta;
         const periodLabel = meta
           ? meta.fecha_desde === meta.fecha_hasta
@@ -172,6 +187,7 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
                 </span>
               </div>
               ${periodLabel ? `<div style="font-family:'DM Mono',monospace;font-size:10px;color:#93A39C;margin-bottom:6px;">${t.popup.period}: ${periodLabel}</div>` : ''}
+              ${confRow}
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-family:'DM Mono',monospace;font-size:11px;color:#EFF5ED;">
                 <div>${t.popup.tmax}: <b>${p.tmax_c}°C</b></div>
                 <div>${t.popup.humidity}: <b>${p.rh_pct}%</b></div>

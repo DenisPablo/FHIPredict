@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Mountain, Route } from 'lucide-react';
 import * as maplibregl from 'maplibre-gl';
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { ForecastResponse, RiskCategory } from '../api/forecast';
 import { COPY, type Lang } from '../i18n';
+
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
 export interface FlyTarget {
   center: [number, number];

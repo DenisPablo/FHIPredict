@@ -49,6 +49,14 @@ export const COPY = {
       coords: 'Coords',
       openMaps: 'Abrir en Google Maps',
       period: 'Período',
+      confidence: 'Confianza est.',
+      confidenceHint:
+        'Estimación heurística (estabilidad del modelo, horizonte y frescura del pronóstico), no garantía.',
+      confidenceLevels: {
+        Alta: 'Alta',
+        Media: 'Media',
+        Baja: 'Baja',
+      } as Record<'Alta' | 'Media' | 'Baja', string>,
     },
     nav: {
       title: 'Navegación rápida',
@@ -106,6 +114,14 @@ export const COPY = {
       coords: 'Coords',
       openMaps: 'Open in Google Maps',
       period: 'Period',
+      confidence: 'Est. confidence',
+      confidenceHint:
+        'Heuristic estimate (model stability, forecast horizon & freshness), not a guarantee.',
+      confidenceLevels: {
+        Alta: 'High',
+        Media: 'Medium',
+        Baja: 'Low',
+      } as Record<'Alta' | 'Media' | 'Baja', string>,
     },
     nav: {
       title: 'Quick jump',

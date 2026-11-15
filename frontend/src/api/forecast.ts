@@ -1,9 +1,12 @@
 export type RiskCategory = 'Bajo' | 'Moderado' | 'Alto' | 'Extremo';
+export type ConfidenceLevel = 'Alta' | 'Media' | 'Baja';
 
 export interface CellProperties {
   cell_id: number;
   riesgo_pct: number;
   categoria: RiskCategory;
+  confianza_pct?: number;
+  confianza_nivel?: ConfidenceLevel;
   tmax_c: number;
   rh_pct: number;
   wind_kmh: number;

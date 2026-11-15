@@ -1,4 +1,4 @@
-"""Spatial hotspot propagation predictor (`lgbm-spread-v1`) and 8-neighbor graph utilities."""
+"""Spatial hotspot propagation predictor (`lgbm-spread-v2`) and 8-neighbor graph utilities."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import lightgbm as lgb
 import numpy as np
 
 
-SPREAD_FEATURE_COLUMNS: list[str] = [
+SPREAD_V1_FEATURE_COLUMNS: list[str] = [
     "lat_centro_t",
     "lon_centro_t",
     "mes",
@@ -43,6 +43,25 @@ SPREAD_FEATURE_COLUMNS: list[str] = [
     "lluvia_acum_30d_t",
     "dias_consecutivos_sin_lluvia_t",
     "vpd_approx_t",
+]
+
+SPREAD_FEATURE_COLUMNS: list[str] = [
+    *SPREAD_V1_FEATURE_COLUMNS,
+    "wind_alignment",
+    "upwind_wind_speed",
+    "frac_dentro_t",
+    "is_industrial_s",
+    "industrial_focos_share_s",
+    "focos_30d_s",
+    "focos_ultimos_1d_t",
+    "focos_ultimos_2d_t",
+    "frp_ultimos_1d_t",
+    "fuel_bosque_t",
+    "fuel_pastizal_t",
+    "fuel_agro_t",
+    "fuel_no_combustible_t",
+    "fuel_bosque_s",
+    "fuel_pastizal_s",
 ]
 
 
@@ -114,7 +133,6 @@ def build_neighbor_graph(
     src_chunks: list[np.ndarray] = []
     dst_chunks: list[np.ndarray] = []
 
-    # Prepare shifted bucket arrays for all 9 (di, dj) offsets
     keys = list(buckets.keys())
     for di in (-1, 0, 1):
         for dj in (-1, 0, 1):
@@ -203,10 +221,20 @@ class SpreadPredictor:
     logit_offset: float
     risk_cutoffs: dict[str, float]
     model_str: str
-    wind_directional_gain: float = 0.35
+    wind_directional_gain: float = 0.20
 
     def __post_init__(self) -> None:
         self._booster = lgb.Booster(model_str=self.model_str)
+        self._idx_wind_align: int | None = (
+            self.feature_columns.index("wind_alignment")
+            if "wind_alignment" in self.feature_columns
+            else None
+        )
+        self._idx_upwind_speed: int | None = (
+            self.feature_columns.index("upwind_wind_speed")
+            if "upwind_wind_speed" in self.feature_columns
+            else None
+        )
 
     @classmethod
     def from_bundle(cls, bundle_path: Path) -> SpreadPredictor:
@@ -217,7 +245,7 @@ class SpreadPredictor:
             logit_offset=float(payload["logit_offset"]),
             risk_cutoffs={k: float(v) for k, v in payload["risk_cutoffs"].items()},
             model_str=str(payload["model_str"]),
-            wind_directional_gain=float(payload.get("wind_directional_gain", 0.35)),
+            wind_directional_gain=float(payload.get("wind_directional_gain", 0.20)),
         )
 
     def predict_pair_probabilities(
@@ -229,9 +257,21 @@ class SpreadPredictor:
         """Predict calibrated `p(s -> t, H)` for candidate pair feature matrix `X`."""
         if len(X) == 0:
             return np.empty(0, dtype=np.float32)
-        raw = self._booster.predict(np.asarray(X, dtype=np.float32), raw_score=True)
+        X_in = np.asarray(X, dtype=np.float32)
+        if X_in.shape[1] > len(self.feature_columns):
+            X_in = X_in[:, : len(self.feature_columns)]
+
+        if wind_alignment is not None and self._idx_wind_align is not None:
+            X_in = X_in.copy()
+            X_in[:, self._idx_wind_align] = wind_alignment.astype(np.float32)
+            if wind_speed_kmh is not None and self._idx_upwind_speed is not None:
+                X_in[:, self._idx_upwind_speed] = (
+                    wind_alignment.astype(np.float32) * wind_speed_kmh.astype(np.float32)
+                )
+
+        raw = self._booster.predict(X_in, raw_score=True)
         z = raw + self.logit_offset
-        if wind_alignment is not None and wind_speed_kmh is not None:
+        if wind_alignment is not None and wind_speed_kmh is not None and self.wind_directional_gain > 0.0:
             wind_factor = np.clip(wind_speed_kmh.astype(np.float64) / 30.0, 0.0, 2.5)
             z = z + self.wind_directional_gain * wind_alignment.astype(np.float64) * wind_factor
         z = np.clip(z, -40.0, 40.0)

@@ -1,4 +1,4 @@
-"""Automated test suite comparing `lgbm-risk-24h-v2` and `lgbm-spread-v1` models and API endpoints."""
+"""Automated test suite comparing `lgbm-risk-24h-v2`, `lgbm-spread-v1`, and `lgbm-spread-v2` models and API endpoints."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def test_both_model_bundles_load_and_produce_calibrated_probabilities():
     spread = SpreadPredictor.from_bundle(MODELS_DIR / "spread_bundle.joblib")
 
     assert v2.model_version == "lgbm-risk-24h-v2"
-    assert spread.model_version == "lgbm-spread-v1"
+    assert spread.model_version == "lgbm-spread-v2"
     assert spread.feature_columns == SPREAD_FEATURE_COLUMNS
 
     X_v2 = np.zeros((8, len(v2.feature_columns)), dtype=np.float32)
@@ -37,12 +37,14 @@ def test_both_model_bundles_load_and_produce_calibrated_probabilities():
     assert np.all((p_sp > 0.0) & (p_sp < 1.0))
 
 
-def test_spread_model_monotonic_across_24h_48h_72h_horizons():
+def test_spread_model_monotonic_across_24h_48h_72h_horizons_and_fuel_barriers():
     spread = SpreadPredictor.from_bundle(MODELS_DIR / "spread_bundle.joblib")
     rng = np.random.default_rng(42)
     n_samples = 64
-    X_base = rng.uniform(0.0, 10.0, size=(n_samples, len(SPREAD_FEATURE_COLUMNS))).astype(np.float32)
+    X_base = rng.uniform(0.0, 1.0, size=(n_samples, len(SPREAD_FEATURE_COLUMNS))).astype(np.float32)
     h_idx = SPREAD_FEATURE_COLUMNS.index("horizon_days")
+    nc_idx = SPREAD_FEATURE_COLUMNS.index("fuel_no_combustible_t")
+    ind_idx = SPREAD_FEATURE_COLUMNS.index("is_industrial_s")
 
     X_24 = X_base.copy()
     X_24[:, h_idx] = 1.0
@@ -55,9 +57,28 @@ def test_spread_model_monotonic_across_24h_48h_72h_horizons():
     p48 = spread.predict_pair_probabilities(X_48)
     p72 = spread.predict_pair_probabilities(X_72)
 
-    # Monotone constraint on `horizon_days` guarantees P(24h) <= P(48h) <= P(72h)
+    # Monotone constraint +1 on `horizon_days` guarantees P(24h) <= P(48h) <= P(72h)
     assert np.all(p24 <= p48 + 1e-6)
     assert np.all(p48 <= p72 + 1e-6)
+
+    # Monotone constraint -1 on `fuel_no_combustible_t` and `is_industrial_s`
+    X_low_barrier = X_24.copy()
+    X_low_barrier[:, nc_idx] = 0.02
+    X_high_barrier = X_24.copy()
+    X_high_barrier[:, nc_idx] = 0.90
+    assert np.all(
+        spread.predict_pair_probabilities(X_high_barrier)
+        <= spread.predict_pair_probabilities(X_low_barrier) + 1e-6
+    )
+
+    X_wildfire = X_24.copy()
+    X_wildfire[:, ind_idx] = 0.0
+    X_industrial = X_24.copy()
+    X_industrial[:, ind_idx] = 1.0
+    assert np.all(
+        spread.predict_pair_probabilities(X_industrial)
+        <= spread.predict_pair_probabilities(X_wildfire) + 1e-6
+    )
 
 
 def test_wind_direction_modulates_spread_probability():
@@ -80,23 +101,25 @@ def test_comparison_report_metrics_and_acceptance_criteria():
     report = json.loads(report_path.read_text(encoding="utf-8"))
 
     assert report["models_compared"]["baseline_risk_model"]["model_version"] == "lgbm-risk-24h-v2"
-    assert report["models_compared"]["candidate_spread_model"]["model_version"] == "lgbm-spread-v1"
+    assert report["models_compared"]["candidate_spread_model"]["model_version"] == "lgbm-spread-v2"
 
     test_overall = report["track_b_conditional_propagation"]["test"]["overall"]
-    sp_metrics = test_overall["lgbm_spread_v1"]
+    sp2_metrics = test_overall["lgbm_spread_v2"]
+    sp1_metrics = test_overall["lgbm_spread_v1"]
     v2_metrics = test_overall["lgbm_risk_24h_v2_scaled"]
     naive_metrics = test_overall["naive_spatial_baseline"]
 
-    # Candidate spread model must outperform both v2 and naive baseline on conditional neighbor propagation
-    assert sp_metrics["pr_auc"] > v2_metrics["pr_auc"]
-    assert sp_metrics["pr_auc"] > naive_metrics["pr_auc"]
-    assert sp_metrics["roc_auc"] > 0.70
+    # Upgraded spread-v2 must outperform spread-v1, v2, and naive baseline
+    assert sp2_metrics["pr_auc"] > sp1_metrics["pr_auc"]
+    assert sp2_metrics["pr_auc"] > v2_metrics["pr_auc"]
+    assert sp2_metrics["pr_auc"] > naive_metrics["pr_auc"]
+    assert sp2_metrics["roc_auc"] > 0.70
 
     # All three horizons (24h, 48h, 72h) must be evaluated in the report
     horizons = report["track_b_conditional_propagation"]["test"]["by_horizon"]
     for h_key in ("24h", "48h", "72h"):
         assert h_key in horizons
-        assert horizons[h_key]["lgbm_spread_v1"]["pr_auc"] > horizons[h_key]["lgbm_risk_24h_v2"]["pr_auc"]
+        assert horizons[h_key]["lgbm_spread_v2"]["pr_auc"] > horizons[h_key]["lgbm_risk_24h_v2"]["pr_auc"]
 
 
 def test_inference_latency_budget_both_models():
@@ -120,18 +143,23 @@ def test_inference_latency_budget_both_models():
 
 
 def test_health_and_spread_api_endpoints():
+    import app.main as main_mod
+
     app = create_app()
     with TestClient(app) as client:
+        if main_mod._service is not None and main_mod._service._cache is not None:
+            main_mod._service._cache.expires_at = time.monotonic() + 3600.0
+
         h_resp = client.get("/api/v1/health")
         assert h_resp.status_code == 200
         h_body = h_resp.json()
         assert h_body["model_version"] == "lgbm-risk-24h-v2"
-        assert h_body["spread_model_version"] == "lgbm-spread-v1"
+        assert h_body["spread_model_version"] == "lgbm-spread-v2"
 
         for horizon in (24, 48, 72):
             s_resp = client.get(f"/api/v1/spread?horizon_hours={horizon}&min_risk=Moderado")
             assert s_resp.status_code == 200
             s_body = s_resp.json()
             assert s_body["type"] == "FeatureCollection"
-            assert s_body["meta"]["model_version"] == "lgbm-spread-v1"
+            assert s_body["meta"]["model_version"] == "lgbm-spread-v2"
             assert s_body["meta"]["horizon_hours"] == horizon

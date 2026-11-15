@@ -42,6 +42,16 @@ class CellBaseline:
     clim_months: np.ndarray  # (N, 12) float32
     grid_coords: list[tuple[float, float]]  # length G
     cell_to_grid: np.ndarray  # (N,) int32
+    frac_dentro: np.ndarray | None = None  # (N,) float32
+    is_industrial: np.ndarray | None = None  # (N,) float32
+    industrial_focos_share: np.ndarray | None = None  # (N,) float32
+    fuel_bosque: np.ndarray | None = None  # (N,) float32
+    fuel_pastizal: np.ndarray | None = None  # (N,) float32
+    fuel_agro: np.ndarray | None = None  # (N,) float32
+    fuel_no_combustible: np.ndarray | None = None  # (N,) float32
+    focos_ultimos_1d: np.ndarray | None = None  # (N,) float32
+    focos_ultimos_2d: np.ndarray | None = None  # (N,) float32
+    frp_ultimos_1d: np.ndarray | None = None  # (N,) float32
 
 
 @dataclass
@@ -71,19 +81,32 @@ def load_baseline(parquet_path: str) -> CellBaseline:
             grid_coords.append(key)
         cell_to_grid[i] = idx
 
+    n = len(lat_c)
     clim = np.column_stack([tbl[f"m{m:02d}"].astype(np.float32) for m in range(1, 13)])
+    f7 = tbl["focos_ultimos_7d"].astype(np.float32)
+    frp7 = tbl["frp_ultimos_7d"].astype(np.float32)
     return CellBaseline(
         cell_id=tbl["cell_id"].astype(np.int32),
         lat_centro=tbl["lat_centro"].astype(np.float32),
         lon_centro=tbl["lon_centro"].astype(np.float32),
         elevacion_m=tbl["elevacion_m"].astype(np.float32),
-        focos_ultimos_7d=tbl["focos_ultimos_7d"].astype(np.float32),
+        focos_ultimos_7d=f7,
         focos_ultimos_30d=tbl["focos_ultimos_30d"].astype(np.float32),
-        frp_ultimos_7d=tbl["frp_ultimos_7d"].astype(np.float32),
+        frp_ultimos_7d=frp7,
         anios_desde_ultimo_fuego=tbl["anios_desde_ultimo_fuego"].astype(np.float32),
         clim_months=clim,
         grid_coords=grid_coords,
         cell_to_grid=cell_to_grid,
+        frac_dentro=tbl["frac_dentro"].astype(np.float32) if "frac_dentro" in tbl else np.ones(n, dtype=np.float32),
+        is_industrial=tbl["is_industrial"].astype(np.float32) if "is_industrial" in tbl else np.zeros(n, dtype=np.float32),
+        industrial_focos_share=tbl["industrial_focos_share"].astype(np.float32) if "industrial_focos_share" in tbl else np.zeros(n, dtype=np.float32),
+        fuel_bosque=tbl["fuel_bosque"].astype(np.float32) if "fuel_bosque" in tbl else np.full(n, 0.27, dtype=np.float32),
+        fuel_pastizal=tbl["fuel_pastizal"].astype(np.float32) if "fuel_pastizal" in tbl else np.full(n, 0.34, dtype=np.float32),
+        fuel_agro=tbl["fuel_agro"].astype(np.float32) if "fuel_agro" in tbl else np.full(n, 0.28, dtype=np.float32),
+        fuel_no_combustible=tbl["fuel_no_combustible"].astype(np.float32) if "fuel_no_combustible" in tbl else np.full(n, 0.11, dtype=np.float32),
+        focos_ultimos_1d=tbl["focos_ultimos_1d"].astype(np.float32) if "focos_ultimos_1d" in tbl else (f7 / 7.0).astype(np.float32),
+        focos_ultimos_2d=tbl["focos_ultimos_2d"].astype(np.float32) if "focos_ultimos_2d" in tbl else (f7 * (2.0 / 7.0)).astype(np.float32),
+        frp_ultimos_1d=tbl["frp_ultimos_1d"].astype(np.float32) if "frp_ultimos_1d" in tbl else (frp7 / 7.0).astype(np.float32),
     )
 
 
@@ -362,8 +385,9 @@ class ForecastService:
         end_idx = min(n_avail - 1, idx + horizon_days - 1)
 
         p_risk = cached.probs[:, idx]
-        # Active sources: cells with recent fire memory OR extreme/high predicted risk today
-        active_source_mask = (b.focos_ultimos_7d >= 1.0) | (p_risk >= self.predictor.risk_cutoffs["Alto"])
+        is_ind = b.is_industrial if b.is_industrial is not None else np.zeros(n_cells, dtype=np.float32)
+        # Active wildfire sources: non-industrial cells with recent fire memory OR extreme/high predicted risk today
+        active_source_mask = ((b.focos_ultimos_7d >= 1.0) | (p_risk >= self.predictor.risk_cutoffs["Alto"])) & (is_ind < 0.5)
         graph = self.get_neighbor_graph()
 
         edge_mask = active_source_mask[graph.src_idx]
@@ -382,8 +406,11 @@ class ForecastService:
             act_nbr_cnt = np.zeros(n_cells, dtype=np.float32)
             nbr_focos_sum = np.zeros(n_cells, dtype=np.float32)
             nbr_frp_sum = np.zeros(n_cells, dtype=np.float32)
-            s_focos = np.maximum(b.focos_ultimos_7d[s_idx], 1.0)
-            s_frp = np.maximum(b.frp_ultimos_7d[s_idx], 10.0)
+            f1_arr = b.focos_ultimos_1d if b.focos_ultimos_1d is not None else (b.focos_ultimos_7d / 7.0)
+            f2_arr = b.focos_ultimos_2d if b.focos_ultimos_2d is not None else (b.focos_ultimos_7d * (2.0 / 7.0))
+            frp1_arr = b.frp_ultimos_1d if b.frp_ultimos_1d is not None else (b.frp_ultimos_7d / 7.0)
+            s_focos = np.maximum(f1_arr[s_idx], 1.0)
+            s_frp = np.maximum(frp1_arr[s_idx], 10.0)
             np.add.at(act_nbr_cnt, t_idx, 1.0)
             np.add.at(nbr_focos_sum, t_idx, s_focos)
             np.add.at(nbr_frp_sum, t_idx, s_frp)
@@ -391,6 +418,21 @@ class ForecastService:
             g_t = b.cell_to_grid[t_idx]
             g_s = b.cell_to_grid[s_idx]
             w = cached.weather
+
+            wind_align = np.zeros(n_edges, dtype=np.float32)
+            if w.wind_direction_10m_dominant is not None:
+                wind_align = compute_wind_alignment(
+                    w.wind_direction_10m_dominant[g_s, idx],
+                    graph.bearing_deg[edge_mask],
+                )
+            upwind_speed = (w.wind_speed_10m_max[g_t, idx] * wind_align).astype(np.float32)
+
+            frac_dentro = b.frac_dentro if b.frac_dentro is not None else np.ones(n_cells, dtype=np.float32)
+            ind_share = b.industrial_focos_share if b.industrial_focos_share is not None else np.zeros(n_cells, dtype=np.float32)
+            fuel_bosque = b.fuel_bosque if b.fuel_bosque is not None else np.full(n_cells, 0.27, dtype=np.float32)
+            fuel_pastizal = b.fuel_pastizal if b.fuel_pastizal is not None else np.full(n_cells, 0.34, dtype=np.float32)
+            fuel_agro = b.fuel_agro if b.fuel_agro is not None else np.full(n_cells, 0.28, dtype=np.float32)
+            fuel_no_comb = b.fuel_no_combustible if b.fuel_no_combustible is not None else np.full(n_cells, 0.11, dtype=np.float32)
 
             X_pairs = np.column_stack([
                 b.lat_centro[t_idx],
@@ -425,17 +467,26 @@ class ForecastService:
                 w.lluvia_acum_30d[g_t, idx],
                 w.dias_consecutivos_sin_lluvia[g_t, idx],
                 w.vpd_approx[g_t, idx],
+                wind_align,
+                upwind_speed,
+                frac_dentro[t_idx],
+                is_ind[s_idx],
+                ind_share[s_idx],
+                b.focos_ultimos_30d[s_idx],
+                f1_arr[t_idx],
+                f2_arr[t_idx],
+                frp1_arr[t_idx],
+                fuel_bosque[t_idx],
+                fuel_pastizal[t_idx],
+                fuel_agro[t_idx],
+                fuel_no_comb[t_idx],
+                fuel_bosque[s_idx],
+                fuel_pastizal[s_idx],
             ])
 
-            wind_align = None
-            if w.wind_direction_10m_dominant is not None:
-                wind_align = compute_wind_alignment(
-                    w.wind_direction_10m_dominant[g_s, idx],
-                    graph.bearing_deg[edge_mask],
-                )
             pair_probs = self.spread_predictor.predict_pair_probabilities(
                 X_pairs,
-                wind_alignment=wind_align,
+                wind_alignment=wind_align if w.wind_direction_10m_dominant is not None else None,
                 wind_speed_kmh=w.wind_speed_10m_max[g_s, idx],
             )
             p_spread = aggregate_target_probabilities(n_cells, t_idx, pair_probs)

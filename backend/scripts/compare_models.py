@@ -1,17 +1,18 @@
-"""Head-to-head comparative benchmark: `lgbm-risk-24h-v2` vs `lgbm-spread-v1`.
+"""Head-to-head comparative benchmark: `lgbm-risk-24h-v2` vs `lgbm-spread-v1` vs `lgbm-spread-v2`.
 
-Evaluates both models on the identical temporal splits (Validation 2024–2025 and
+Evaluates all models on the identical temporal splits (Validation 2024–2025 and
 Unseen Holdout Test 2026) across two complementary tracks:
 
 - Track A (Global Cell-Day 24h Risk):
-  Compares `lgbm-risk-24h-v2` alone against the fused `v2 + lgbm-spread-v1` probability
-  on the full cell-day population.
+  Reference baseline metrics of `lgbm-risk-24h-v2` on the full cell-day population.
 - Track B (Conditional Neighbor Propagation at 24h, 48h, and 72h):
   Restricts to directed neighbor pairs `(source s -> target t, date d)` where source
   cell `s` had an active fire on `d - 1`. Compares:
-    1. `lgbm-spread-v1` (new spatial propagation model)
-    2. `lgbm-risk-24h-v2` (existing cell-only model applied to target cell `t`, scaled for H days)
-    3. Naive heuristic baseline (target recency + active neighbor intensity score)
+    1. `lgbm-spread-v2` (upgraded propagation model with fuel fractions, industrial filter, and directional wind)
+    2. `v2 + spread-v2` (fused ensemble combining `lgbm-risk-24h-v2` + `lgbm-spread-v2`)
+    3. `lgbm-spread-v1` (initial propagation model without fuel/industrial/historical wind direction)
+    4. `lgbm-risk-24h-v2` (existing cell-only model applied to target cell `t`, scaled for H days)
+    5. Naive heuristic baseline (target recency + active neighbor intensity score)
 
 Writes:
 - `backend/models/comparison_report.json`
@@ -44,7 +45,6 @@ from scripts.train_spread import (
 )
 
 
-# Map columns from SPREAD_FEATURE_COLUMNS back to the 20 columns expected by `lgbm-risk-24h-v2`
 V2_FROM_SPREAD_COLS = [
     "lat_centro_t",
     "lon_centro_t",
@@ -109,6 +109,9 @@ def run_comparison(
     v2_meta = json.loads(v2_meta_path.read_text(encoding="utf-8"))
     spread_meta = json.loads(spread_meta_path.read_text(encoding="utf-8"))
 
+    spread_v1_bundle = spread_bundle_path.parent / "spread_v1_bundle.joblib"
+    spread_v1_pred = SpreadPredictor.from_bundle(spread_v1_bundle) if spread_v1_bundle.exists() else None
+
     splits = build_spread_splits(
         baseline_parquet=baseline_parquet,
         firms_parquet=firms_parquet,
@@ -127,24 +130,42 @@ def run_comparison(
 
         # Measure inference speed on identical candidate rows
         t0 = time.perf_counter()
-        p_spread_all = spread_pred.predict_pair_probabilities(X_sp)
+        p_spread_v2 = spread_pred.predict_pair_probabilities(X_sp)
         t_spread_s = time.perf_counter() - t0
 
         t1 = time.perf_counter()
         p_v2_24h = v2_pred.predict_probabilities(X_v2)
         t_v2_s = time.perf_counter() - t1
 
+        p_spread_v1 = (
+            spread_v1_pred.predict_pair_probabilities(X_sp[:, : len(spread_v1_pred.feature_columns)])
+            if spread_v1_pred is not None
+            else p_spread_v2
+        )
+
         # Scale v2 daily probability to cumulative H-day probability: 1 - (1 - p_24h)^H
         horizons = X_sp[:, h_idx]
         p_v2_scaled = (1.0 - np.power(1.0 - np.clip(p_v2_24h, 0.0, 1.0 - 1e-7), horizons)).astype(np.float32)
-        p_fused_all = fuse_risk_and_spread(p_v2_scaled, p_spread_all, weight_spread=0.65)
+        p_fused_all = fuse_risk_and_spread(p_v2_scaled, p_spread_v2, weight_spread=0.75)
         p_naive_all = naive_spread_score(X_sp)
 
+        m_sp_v2 = evaluate_predictions(y_sp, p_spread_v2, w_sp, spread_pred.risk_cutoffs)
+        m_sp_v1 = evaluate_predictions(
+            y_sp,
+            p_spread_v1,
+            w_sp,
+            spread_v1_pred.risk_cutoffs if spread_v1_pred is not None else spread_pred.risk_cutoffs,
+        )
+        m_v2_sc = evaluate_predictions(y_sp, p_v2_scaled, w_sp)
+        m_fused = evaluate_predictions(y_sp, p_fused_all, w_sp)
+        m_naive = evaluate_predictions(y_sp, p_naive_all, w_sp)
+
         overall = {
-            "lgbm_spread_v1": evaluate_predictions(y_sp, p_spread_all, w_sp, spread_pred.risk_cutoffs),
-            "lgbm_risk_24h_v2_scaled": evaluate_predictions(y_sp, p_v2_scaled, w_sp),
-            "v2_plus_spread_fused": evaluate_predictions(y_sp, p_fused_all, w_sp),
-            "naive_spatial_baseline": evaluate_predictions(y_sp, p_naive_all, w_sp),
+            "lgbm_spread_v2": m_sp_v2,
+            "lgbm_spread_v1": m_sp_v1,
+            "lgbm_risk_24h_v2_scaled": m_v2_sc,
+            "v2_plus_spread_fused": m_fused,
+            "naive_spatial_baseline": m_naive,
             "inference_benchmark": {
                 "n_rows": int(len(y_sp)),
                 "spread_seconds": round(t_spread_s, 4),
@@ -161,32 +182,41 @@ def run_comparison(
                 continue
             y_h = y_sp[m]
             w_h = w_sp[m]
-            m_sp = evaluate_predictions(y_h, p_spread_all[m], w_h, spread_pred.risk_cutoffs)
-            m_v2 = evaluate_predictions(y_h, p_v2_scaled[m], w_h)
-            m_fu = evaluate_predictions(y_h, p_fused_all[m], w_h)
-            m_na = evaluate_predictions(y_h, p_naive_all[m], w_h)
-            rel_gain_vs_v2 = (m_sp["pr_auc"] - m_v2["pr_auc"]) / max(m_v2["pr_auc"], 1e-12) * 100.0
-            rel_gain_vs_naive = (m_sp["pr_auc"] - m_na["pr_auc"]) / max(m_na["pr_auc"], 1e-12) * 100.0
+            m_sp2_h = evaluate_predictions(y_h, p_spread_v2[m], w_h, spread_pred.risk_cutoffs)
+            m_sp1_h = evaluate_predictions(
+                y_h,
+                p_spread_v1[m],
+                w_h,
+                spread_v1_pred.risk_cutoffs if spread_v1_pred is not None else spread_pred.risk_cutoffs,
+            )
+            m_v2_h = evaluate_predictions(y_h, p_v2_scaled[m], w_h)
+            m_fu_h = evaluate_predictions(y_h, p_fused_all[m], w_h)
+            m_na_h = evaluate_predictions(y_h, p_naive_all[m], w_h)
+            rel_gain_vs_v2 = (m_sp2_h["pr_auc"] - m_v2_h["pr_auc"]) / max(m_v2_h["pr_auc"], 1e-12) * 100.0
+            rel_gain_vs_v1 = (m_sp2_h["pr_auc"] - m_sp1_h["pr_auc"]) / max(m_sp1_h["pr_auc"], 1e-12) * 100.0
+            rel_gain_vs_naive = (m_sp2_h["pr_auc"] - m_na_h["pr_auc"]) / max(m_na_h["pr_auc"], 1e-12) * 100.0
             by_horizon[f"{h * 24}h"] = {
-                "lgbm_spread_v1": m_sp,
-                "lgbm_risk_24h_v2": m_v2,
-                "v2_plus_spread_fused": m_fu,
-                "naive_spatial_baseline": m_na,
+                "lgbm_spread_v2": m_sp2_h,
+                "lgbm_spread_v1": m_sp1_h,
+                "lgbm_risk_24h_v2": m_v2_h,
+                "v2_plus_spread_fused": m_fu_h,
+                "naive_spatial_baseline": m_na_h,
                 "relative_pr_auc_gain_vs_v2_pct": round(rel_gain_vs_v2, 2),
+                "relative_pr_auc_gain_vs_v1_pct": round(rel_gain_vs_v1, 2),
                 "relative_pr_auc_gain_vs_naive_pct": round(rel_gain_vs_naive, 2),
             }
 
         overall_rel_gain_vs_v2 = (
-            (overall["lgbm_spread_v1"]["pr_auc"] - overall["lgbm_risk_24h_v2_scaled"]["pr_auc"])
-            / max(overall["lgbm_risk_24h_v2_scaled"]["pr_auc"], 1e-12)
-            * 100.0
+            (m_sp_v2["pr_auc"] - m_v2_sc["pr_auc"]) / max(m_v2_sc["pr_auc"], 1e-12) * 100.0
+        )
+        overall_rel_gain_vs_v1 = (
+            (m_sp_v2["pr_auc"] - m_sp_v1["pr_auc"]) / max(m_sp_v1["pr_auc"], 1e-12) * 100.0
         )
         overall_rel_gain_vs_naive = (
-            (overall["lgbm_spread_v1"]["pr_auc"] - overall["naive_spatial_baseline"]["pr_auc"])
-            / max(overall["naive_spatial_baseline"]["pr_auc"], 1e-12)
-            * 100.0
+            (m_sp_v2["pr_auc"] - m_naive["pr_auc"]) / max(m_naive["pr_auc"], 1e-12) * 100.0
         )
         overall["relative_pr_auc_gain_vs_v2_pct"] = round(overall_rel_gain_vs_v2, 2)
+        overall["relative_pr_auc_gain_vs_v1_pct"] = round(overall_rel_gain_vs_v1, 2)
         overall["relative_pr_auc_gain_vs_naive_pct"] = round(overall_rel_gain_vs_naive, 2)
 
         results_by_split[split_name] = {
@@ -224,8 +254,9 @@ def run_comparison(
         "acceptance_gate": {
             "required_relative_pr_auc_gain_pct": 20.0,
             "observed_test_pr_auc_gain_vs_v2_pct": test_overall["relative_pr_auc_gain_vs_v2_pct"],
+            "observed_test_pr_auc_gain_vs_v1_pct": test_overall["relative_pr_auc_gain_vs_v1_pct"],
             "observed_test_pr_auc_gain_vs_naive_pct": test_overall["relative_pr_auc_gain_vs_naive_pct"],
-            "calibration_ratio_test": round(test_overall["lgbm_spread_v1"]["calibration_ratio"], 4),
+            "calibration_ratio_test": round(test_overall["lgbm_spread_v2"]["calibration_ratio"], 4),
             "verdict": "PASS" if passes_margin else "REVIEW",
         },
     }
@@ -236,7 +267,8 @@ def run_comparison(
     print(
         f"Saved comparison report to {out_json.name} and {out_md.name} | "
         f"Verdict={report['acceptance_gate']['verdict']} | "
-        f"Test PR-AUC gain vs v2: +{test_overall['relative_pr_auc_gain_vs_v2_pct']:.2f}%"
+        f"Test PR-AUC gain vs v2: +{test_overall['relative_pr_auc_gain_vs_v2_pct']:.2f}% | "
+        f"vs spread-v1: +{test_overall['relative_pr_auc_gain_vs_v1_pct']:.2f}%"
     )
     return report
 
@@ -252,18 +284,19 @@ def _write_markdown_report(report: dict[str, Any], out_md: Path) -> None:
     va_ov = va["overall"]
 
     lines = [
-        "# Comparative Benchmark Results — `lgbm-risk-24h-v2` vs `lgbm-spread-v1`",
+        "# Comparative Benchmark Results — `lgbm-risk-24h-v2` vs `lgbm-spread-v1` vs `lgbm-spread-v2`",
         "",
         f"- **Generated at**: `{report['generated_at']}`",
         f"- **Branch**: `feat/propagation-model-v3`",
-        f"- **Acceptance Gate Verdict**: **{gate['verdict']}** (Required ≥ +20% relative PR-AUC on Track B; observed `{gate['observed_test_pr_auc_gain_vs_v2_pct']:+.2f}%` vs `v2` and `{gate['observed_test_pr_auc_gain_vs_naive_pct']:+.2f}%` vs naive baseline)",
+        f"- **Acceptance Gate Verdict**: **{gate['verdict']}** (Required ≥ +20% relative PR-AUC on Track B; observed `{gate['observed_test_pr_auc_gain_vs_v2_pct']:+.2f}%` vs `v2`, `{gate['observed_test_pr_auc_gain_vs_v1_pct']:+.2f}%` vs `spread-v1`, and `{gate['observed_test_pr_auc_gain_vs_naive_pct']:+.2f}%` vs naive baseline)",
         "",
         "## 1. Model Overview & Global Baseline Reference (Track A)",
         "",
         "| Model | Role | Horizons | Features | Val PR-AUC | Test PR-AUC | Test ROC-AUC |",
         "|---|---|---|---:|---:|---:|---:|",
         f"| `{v2_info['model_version']}` | Global cell-day ignition risk | 24h | {v2_info['n_features']} | {v2_info['global_val_pr_auc']:.4f} | {v2_info['global_test_pr_auc']:.4f} | {v2_info['global_test_roc_auc']:.4f} |",
-        f"| `{sp_info['model_version']}` | Conditional 8-neighbor propagation | 24h, 48h, 72h | {sp_info['n_features']} | {sp_info['val_pr_auc']:.4f} | {sp_info['test_pr_auc']:.4f} | {sp_info['test_roc_auc']:.4f} |",
+        f"| `lgbm-spread-v1` | Conditional 8-neighbor propagation (v1) | 24h, 48h, 72h | 32 | {va_ov['lgbm_spread_v1']['pr_auc']:.4f} | {te_ov['lgbm_spread_v1']['pr_auc']:.4f} | {te_ov['lgbm_spread_v1']['roc_auc']:.4f} |",
+        f"| `{sp_info['model_version']}` | Conditional 8-neighbor propagation + Fuel + Wind + Industrial filter | 24h, 48h, 72h | {sp_info['n_features']} | **{sp_info['val_pr_auc']:.4f}** | **{sp_info['test_pr_auc']:.4f}** | **{sp_info['test_roc_auc']:.4f}** |",
         "",
         "## 2. Track B — Conditional Neighbor Propagation (Unseen 2026 Holdout, All Horizons)",
         "",
@@ -272,8 +305,9 @@ def _write_markdown_report(report: dict[str, Any], out_md: Path) -> None:
     ]
 
     for key, label in (
-        ("lgbm_spread_v1", "`lgbm-spread-v1` (New)"),
-        ("v2_plus_spread_fused", "`v2 + spread` (Fused)"),
+        ("lgbm_spread_v2", "`lgbm-spread-v2` (Fuel + Wind + Ind)"),
+        ("v2_plus_spread_fused", "`v2 + spread-v2` (Fused Ensemble)"),
+        ("lgbm_spread_v1", "`lgbm-spread-v1` (Initial Spread)"),
         ("lgbm_risk_24h_v2_scaled", "`lgbm-risk-24h-v2` (Scaled to H)"),
         ("naive_spatial_baseline", "Naive Spatial Heuristic"),
     ):
@@ -289,7 +323,7 @@ def _write_markdown_report(report: dict[str, Any], out_md: Path) -> None:
         "",
         "## 3. Breakdown by Propagation Horizon (24h vs 48h vs 72h — 2026 Holdout)",
         "",
-        "| Horizon | Base Rate | `lgbm-spread-v1` PR-AUC | `lgbm-risk-24h-v2` PR-AUC | `v2 + spread` PR-AUC | Naive PR-AUC | Gain vs `v2` | Gain vs Naive | `spread-v1` ROC-AUC |",
+        "| Horizon | Base Rate | `lgbm-spread-v2` PR-AUC | `v2 + spread-v2` PR-AUC | `lgbm-spread-v1` PR-AUC | `lgbm-risk-24h-v2` PR-AUC | Gain `spread-v2` vs `v2` | Gain `spread-v2` vs `v1` | `spread-v2` ROC-AUC |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ])
 
@@ -297,15 +331,15 @@ def _write_markdown_report(report: dict[str, Any], out_md: Path) -> None:
         if h_key not in te["by_horizon"]:
             continue
         bh = te["by_horizon"][h_key]
-        msp = bh["lgbm_spread_v1"]
+        msp2 = bh["lgbm_spread_v2"]
+        msp1 = bh["lgbm_spread_v1"]
         mv2 = bh["lgbm_risk_24h_v2"]
         mfu = bh["v2_plus_spread_fused"]
-        mna = bh["naive_spatial_baseline"]
         lines.append(
-            f"| **{h_key}** | {msp['positive_rate'] * 100:.2f}% | **{msp['pr_auc']:.4f}** | "
-            f"{mv2['pr_auc']:.4f} | {mfu['pr_auc']:.4f} | {mna['pr_auc']:.4f} | "
-            f"**{bh['relative_pr_auc_gain_vs_v2_pct']:+.1f}%** | **{bh['relative_pr_auc_gain_vs_naive_pct']:+.1f}%** | "
-            f"{msp['roc_auc']:.4f} |"
+            f"| **{h_key}** | {msp2['positive_rate'] * 100:.2f}% | **{msp2['pr_auc']:.4f}** | "
+            f"{mfu['pr_auc']:.4f} | {msp1['pr_auc']:.4f} | {mv2['pr_auc']:.4f} | "
+            f"**{bh['relative_pr_auc_gain_vs_v2_pct']:+.1f}%** | **{bh['relative_pr_auc_gain_vs_v1_pct']:+.1f}%** | "
+            f"{msp2['roc_auc']:.4f} |"
         )
 
     lines.extend([
@@ -314,15 +348,16 @@ def _write_markdown_report(report: dict[str, Any], out_md: Path) -> None:
         "",
         "| Model | Val PR-AUC | Val ROC-AUC | Val Brier | Val Top-1% Lift |",
         "|---|---:|---:|---:|---:|",
-        f"| `lgbm-spread-v1` | **{va_ov['lgbm_spread_v1']['pr_auc']:.4f}** | {va_ov['lgbm_spread_v1']['roc_auc']:.4f} | {va_ov['lgbm_spread_v1']['brier_score']:.4f} | {va_ov['lgbm_spread_v1']['top_k']['top_1pct']['lift']:.2f}x |",
-        f"| `v2 + spread` (Fused) | {va_ov['v2_plus_spread_fused']['pr_auc']:.4f} | {va_ov['v2_plus_spread_fused']['roc_auc']:.4f} | {va_ov['v2_plus_spread_fused']['brier_score']:.4f} | {va_ov['v2_plus_spread_fused']['top_k']['top_1pct']['lift']:.2f}x |",
+        f"| `lgbm-spread-v2` | **{va_ov['lgbm_spread_v2']['pr_auc']:.4f}** | {va_ov['lgbm_spread_v2']['roc_auc']:.4f} | {va_ov['lgbm_spread_v2']['brier_score']:.4f} | {va_ov['lgbm_spread_v2']['top_k']['top_1pct']['lift']:.2f}x |",
+        f"| `v2 + spread-v2` (Fused) | {va_ov['v2_plus_spread_fused']['pr_auc']:.4f} | {va_ov['v2_plus_spread_fused']['roc_auc']:.4f} | {va_ov['v2_plus_spread_fused']['brier_score']:.4f} | {va_ov['v2_plus_spread_fused']['top_k']['top_1pct']['lift']:.2f}x |",
+        f"| `lgbm-spread-v1` | {va_ov['lgbm_spread_v1']['pr_auc']:.4f} | {va_ov['lgbm_spread_v1']['roc_auc']:.4f} | {va_ov['lgbm_spread_v1']['brier_score']:.4f} | {va_ov['lgbm_spread_v1']['top_k']['top_1pct']['lift']:.2f}x |",
         f"| `lgbm-risk-24h-v2` (Scaled) | {va_ov['lgbm_risk_24h_v2_scaled']['pr_auc']:.4f} | {va_ov['lgbm_risk_24h_v2_scaled']['roc_auc']:.4f} | {va_ov['lgbm_risk_24h_v2_scaled']['brier_score']:.4f} | {va_ov['lgbm_risk_24h_v2_scaled']['top_k']['top_1pct']['lift']:.2f}x |",
         f"| Naive Spatial Heuristic | {va_ov['naive_spatial_baseline']['pr_auc']:.4f} | {va_ov['naive_spatial_baseline']['roc_auc']:.4f} | {va_ov['naive_spatial_baseline']['brier_score']:.4f} | {va_ov['naive_spatial_baseline']['top_k']['top_1pct']['lift']:.2f}x |",
         "",
         "## 5. Inference Throughput Benchmark",
         "",
         f"- **Test candidate pairs evaluated**: `{te_ov['inference_benchmark']['n_rows']:,}`",
-        f"- **`lgbm-spread-v1` latency**: `{te_ov['inference_benchmark']['spread_seconds']} s` (`{te_ov['inference_benchmark']['spread_rows_per_sec']:,.0f} rows/s`)",
+        f"- **`lgbm-spread-v2` latency**: `{te_ov['inference_benchmark']['spread_seconds']} s` (`{te_ov['inference_benchmark']['spread_rows_per_sec']:,.0f} rows/s`)",
         f"- **`lgbm-risk-24h-v2` latency**: `{te_ov['inference_benchmark']['v2_seconds']} s` (`{te_ov['inference_benchmark']['v2_rows_per_sec']:,.0f} rows/s`)",
         "",
     ])
@@ -332,7 +367,7 @@ def _write_markdown_report(report: dict[str, Any], out_md: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Compare lgbm-risk-24h-v2 and lgbm-spread-v1.")
+    parser = argparse.ArgumentParser(description="Compare lgbm-risk-24h-v2, lgbm-spread-v1, and lgbm-spread-v2.")
     parser.add_argument("--models-dir", type=Path, default=BACKEND_ROOT / "models")
     parser.add_argument(
         "--firms",

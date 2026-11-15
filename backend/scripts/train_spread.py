@@ -190,12 +190,14 @@ def build_spread_splits(
             "src_cell_id": baseline.cell_id[graph.src_idx],
             "dst_cell_id": baseline.cell_id[graph.dst_idx],
             "dist_km": graph.dist_km,
+            "bearing_deg": graph.bearing_deg,
             "sin_bearing": graph.sin_bearing,
             "cos_bearing": graph.cos_bearing,
             "delta_elev_m": graph.delta_elev_m,
             "slope_deg": graph.slope_deg,
         }
     )
+    n_cells = len(baseline.cell_id)
     cells_table = pa.table(
         {
             "cell_id": baseline.cell_id,
@@ -204,9 +206,23 @@ def build_spread_splits(
             "elevacion_m": baseline.elevacion_m,
             "lat_clima": np.round(baseline.lat_centro * 2.0) / 2.0,
             "lon_clima": np.round(baseline.lon_centro / 0.625) * 0.625,
+            "frac_dentro": baseline.frac_dentro if baseline.frac_dentro is not None else np.ones(n_cells, dtype=np.float32),
+            "is_industrial": baseline.is_industrial if baseline.is_industrial is not None else np.zeros(n_cells, dtype=np.float32),
+            "industrial_focos_share": baseline.industrial_focos_share if baseline.industrial_focos_share is not None else np.zeros(n_cells, dtype=np.float32),
+            "fuel_bosque": baseline.fuel_bosque if baseline.fuel_bosque is not None else np.full(n_cells, 0.27, dtype=np.float32),
+            "fuel_pastizal": baseline.fuel_pastizal if baseline.fuel_pastizal is not None else np.full(n_cells, 0.34, dtype=np.float32),
+            "fuel_agro": baseline.fuel_agro if baseline.fuel_agro is not None else np.full(n_cells, 0.28, dtype=np.float32),
+            "fuel_no_combustible": baseline.fuel_no_combustible if baseline.fuel_no_combustible is not None else np.full(n_cells, 0.11, dtype=np.float32),
         }
     )
 
+    wd_candidates = [
+        BACKEND_ROOT / "models" / "nasapower_wd10m.parquet",
+        Path("C:/Users/Denis/Documents/codigo/ModeloPredictivo/data/weather/nasapower/wd10m_2018_2026.parquet"),
+    ]
+    wd_found = next((p for p in wd_candidates if p.exists()), None)
+    wd10m_path = wd_found.as_posix() if wd_found is not None else ""
+    has_wd10m = wd_found is not None
     base_feature_cols = [c for c in SPREAD_FEATURE_COLUMNS if c != "horizon_days"]
 
     threads = min(8, os.cpu_count() or 4)
@@ -224,6 +240,18 @@ def build_spread_splits(
 
         con.register("edges_arrow", edges_table)
         con.register("cells_arrow", cells_table)
+
+        wd_join_sql = (
+            f"LEFT JOIN read_parquet('{wd10m_path}') wd "
+            "ON wb.lat_clima = wd.lat_clima AND wb.lon_clima = wd.lon_clima AND wb.fecha = wd.fecha"
+            if has_wd10m
+            else ""
+        )
+        wd_select_sql = (
+            "wd.wind_direction_10m_dominant::FLOAT AS wind_direction_10m_dominant,"
+            if has_wd10m
+            else "NULL::FLOAT AS wind_direction_10m_dominant,"
+        )
 
         con.execute(f"""
         CREATE TEMP TABLE neighbor_edges AS SELECT * FROM edges_arrow;
@@ -257,11 +285,13 @@ def build_spread_splits(
         ),
         weather_streaks AS (
             SELECT
-                *,
-                SUM(is_rain_day) OVER (
-                    PARTITION BY lat_clima, lon_clima ORDER BY fecha
+                wb.*,
+                {wd_select_sql}
+                SUM(wb.is_rain_day) OVER (
+                    PARTITION BY wb.lat_clima, wb.lon_clima ORDER BY wb.fecha
                 ) AS rain_group
-            FROM weather_base
+            FROM weather_base wb
+            {wd_join_sql}
         )
         SELECT
             lat_clima,
@@ -270,6 +300,7 @@ def build_spread_splits(
             temperature_2m_max,
             relative_humidity_2m,
             wind_speed_10m_max,
+            wind_direction_10m_dominant,
             precipitation_sum,
             shortwave_radiation_sum,
             SUM(COALESCE(precipitation_sum, 0.0)) OVER (
@@ -333,7 +364,13 @@ def build_spread_splits(
                         FROM pos_events p2
                         WHERE p2.cell_id = p.cell_id
                           AND p2.fecha BETWEEN p.fecha - INTERVAL 6 DAY AND p.fecha
-                    ), p.n_harm)::FLOAT AS focos_7d_s
+                    ), p.n_harm)::FLOAT AS focos_7d_s,
+                    COALESCE((
+                        SELECT SUM(p3.n_harm)
+                        FROM pos_events p3
+                        WHERE p3.cell_id = p.cell_id
+                          AND p3.fecha BETWEEN p.fecha - INTERVAL 29 DAY AND p.fecha
+                    ), p.n_harm)::FLOAT AS focos_30d_s
                 FROM pos_events p
                 WHERE (p.fecha + INTERVAL 1 DAY)::DATE BETWEEN DATE '{y_start}' AND DATE '{y_end}'
             ),
@@ -343,6 +380,7 @@ def build_spread_splits(
                     e.dst_cell_id,
                     s.fecha,
                     e.dist_km,
+                    e.bearing_deg,
                     e.sin_bearing,
                     e.cos_bearing,
                     e.delta_elev_m,
@@ -350,6 +388,7 @@ def build_spread_splits(
                     s.n_harm_s,
                     s.phi_harm_s,
                     s.focos_7d_s,
+                    s.focos_30d_s,
                     COUNT(*) OVER (PARTITION BY e.dst_cell_id, s.fecha)::FLOAT AS active_neighbors_count_t,
                     SUM(s.n_harm_s) OVER (PARTITION BY e.dst_cell_id, s.fecha)::FLOAT AS neighbors_focos_sum_t,
                     SUM(s.phi_harm_s) OVER (PARTITION BY e.dst_cell_id, s.fecha)::FLOAT AS neighbors_frp_sum_t,
@@ -384,6 +423,18 @@ def build_spread_splits(
                 SELECT
                     dt.cell_id,
                     dt.fecha,
+                    COALESCE(SUM(CASE
+                        WHEN p.fecha = dt.fecha - INTERVAL 1 DAY
+                        THEN p.n_harm ELSE 0.0
+                    END), 0.0)::FLOAT AS focos_ultimos_1d_t,
+                    COALESCE(SUM(CASE
+                        WHEN p.fecha BETWEEN dt.fecha - INTERVAL 2 DAY AND dt.fecha - INTERVAL 1 DAY
+                        THEN p.n_harm ELSE 0.0
+                    END), 0.0)::FLOAT AS focos_ultimos_2d_t,
+                    COALESCE(SUM(CASE
+                        WHEN p.fecha = dt.fecha - INTERVAL 1 DAY
+                        THEN p.phi_harm ELSE 0.0
+                    END), 0.0)::FLOAT AS frp_ultimos_1d_t,
                     COALESCE(SUM(CASE
                         WHEN p.fecha BETWEEN dt.fecha - INTERVAL 7 DAY AND dt.fecha - INTERVAL 1 DAY
                         THEN p.n_harm ELSE 0.0
@@ -441,12 +492,37 @@ def build_spread_splits(
                 wf.lluvia_acum_15d AS lluvia_acum_15d_t,
                 wf.lluvia_acum_30d AS lluvia_acum_30d_t,
                 wf.dias_consecutivos_sin_lluvia AS dias_consecutivos_sin_lluvia_t,
-                wf.vpd_approx AS vpd_approx_t
+                wf.vpd_approx AS vpd_approx_t,
+                CASE
+                    WHEN wf.wind_direction_10m_dominant IS NOT NULL
+                    THEN COS(RADIANS(wf.wind_direction_10m_dominant + 180.0 - sp.bearing_deg))::FLOAT
+                    ELSE 0.0::FLOAT
+                END AS wind_alignment,
+                CASE
+                    WHEN wf.wind_direction_10m_dominant IS NOT NULL
+                    THEN (wf.wind_speed_10m_max * COS(RADIANS(wf.wind_direction_10m_dominant + 180.0 - sp.bearing_deg)))::FLOAT
+                    ELSE 0.0::FLOAT
+                END AS upwind_wind_speed,
+                ac.frac_dentro AS frac_dentro_t,
+                sc.is_industrial AS is_industrial_s,
+                sc.industrial_focos_share AS industrial_focos_share_s,
+                sp.focos_30d_s,
+                tm.focos_ultimos_1d_t,
+                tm.focos_ultimos_2d_t,
+                tm.frp_ultimos_1d_t,
+                ac.fuel_bosque AS fuel_bosque_t,
+                ac.fuel_pastizal AS fuel_pastizal_t,
+                ac.fuel_agro AS fuel_agro_t,
+                ac.fuel_no_combustible AS fuel_no_combustible_t,
+                sc.fuel_bosque AS fuel_bosque_s,
+                sc.fuel_pastizal AS fuel_pastizal_s
             FROM sampled_pairs sp
             JOIN target_memory tm
               ON sp.dst_cell_id = tm.cell_id AND sp.fecha = tm.fecha
             JOIN active_cells ac
               ON sp.dst_cell_id = ac.cell_id
+            JOIN active_cells sc
+              ON sp.src_cell_id = sc.cell_id
             JOIN weather_features wf
               ON ac.lat_clima = wf.lat_clima
              AND ac.lon_clima = wf.lon_clima
@@ -544,14 +620,19 @@ def train_and_export(
     X_test, y_test, _ = splits["test"]
 
     print(
-        f"[3/3] Training lgbm-spread-v1 | "
+        f"[3/3] Training lgbm-spread-v2 | "
         f"train={len(y_train):,} (pos={int(y_train.sum()):,}) | "
         f"val={len(y_val):,} (pos={int(y_val.sum()):,}) | "
         f"test={len(y_test):,} (pos={int(y_test.sum()):,})"
     )
 
-    # Monotone constraint +1 on `horizon_days` so P(24h) <= P(48h) <= P(72h)
-    monotone = [1 if c == "horizon_days" else 0 for c in SPREAD_FEATURE_COLUMNS]
+    # Monotone constraints: +1 on `horizon_days`, -1 on `fuel_no_combustible_t` and `is_industrial_s`
+    monotone_map = {
+        "horizon_days": 1,
+        "fuel_no_combustible_t": -1,
+        "is_industrial_s": -1,
+    }
+    monotone = [monotone_map.get(c, 0) for c in SPREAD_FEATURE_COLUMNS]
 
     dtrain = lgb.Dataset(X_train, label=y_train, feature_name=SPREAD_FEATURE_COLUMNS)
     dval = lgb.Dataset(X_val, label=y_val, feature_name=SPREAD_FEATURE_COLUMNS, reference=dtrain)
@@ -574,7 +655,7 @@ def train_and_export(
     booster = lgb.train(
         params=params,
         train_set=dtrain,
-        num_boost_round=500,
+        num_boost_round=600,
         valid_sets=[dval],
         callbacks=[lgb.early_stopping(stopping_rounds=40, verbose=False)],
     )
@@ -601,11 +682,11 @@ def train_and_export(
 
     model_str = booster.model_to_string()
     bundle_payload = {
-        "model_version": "lgbm-spread-v1",
+        "model_version": "lgbm-spread-v2",
         "feature_columns": SPREAD_FEATURE_COLUMNS,
         "logit_offset": logit_offset,
         "risk_cutoffs": cutoffs,
-        "wind_directional_gain": 0.35,
+        "wind_directional_gain": 0.20,
         "model_str": model_str,
     }
     out_bundle.parent.mkdir(parents=True, exist_ok=True)
@@ -616,7 +697,7 @@ def train_and_export(
         for col, v in zip(SPREAD_FEATURE_COLUMNS, booster.feature_importance(importance_type="split"))
     }
     metadata = {
-        "model_version": "lgbm-spread-v1",
+        "model_version": "lgbm-spread-v2",
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "horizons_hours": [24, 48, 72],
         "positive_label_rule": "target neighbor t has (n_harmonized >= 1 AND phi_harmonized >= 10.0) in [d, d + H - 1] given source s active on d - 1",

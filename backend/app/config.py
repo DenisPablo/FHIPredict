@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     chunk_size: int = Field(default=100, ge=1, le=200)
     max_concurrency: int = Field(default=1, ge=1, le=4)
+    enable_spread: bool = True
+    confidence_horizon_decay_per_day: float = Field(default=0.025, ge=0.0, le=0.2)
+    confidence_stale_penalty: float = Field(default=0.15, ge=0.0, le=0.5)
+    confidence_high_cutoff: float = Field(default=75.0, ge=0.0, le=100.0)
+    confidence_medium_cutoff: float = Field(default=50.0, ge=0.0, le=100.0)
 
 
 @lru_cache

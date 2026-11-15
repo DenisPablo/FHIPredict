@@ -1,0 +1,419 @@
+{
+  "model_version": "lgbm-spread-v2",
+  "trained_at": "2026-11-15T19:53:58.649310+00:00",
+  "horizons_hours": [
+    24,
+    48,
+    72
+  ],
+  "positive_label_rule": "target neighbor t has (n_harmonized >= 1 AND phi_harmonized >= 10.0) in [d, d + H - 1] given source s active on d - 1",
+  "split": {
+    "train": "2018-01-01..2023-12-31",
+    "val": "2024-01-01..2025-12-31",
+    "test": "2026-01-01..2026-12-31",
+    "train_rows": 1171447,
+    "val_rows": 245910,
+    "test_rows": 65110,
+    "train_pos": 354157,
+    "val_pos": 52413,
+    "test_pos": 12193,
+    "neg_sample_permille": 200,
+    "best_iteration": 264
+  },
+  "probability": {
+    "meaning": "Real-world probability that active source cell s propagates fire to neighbor cell t within H days",
+    "method": "prior_correction",
+    "neg_sample_permille": 200,
+    "logit_offset": -1.6094379124341003
+  },
+  "risk_cutoffs": {
+    "Extremo": 0.4562807231292296,
+    "Alto": 0.1977834769217821,
+    "Moderado": 0.08237029597957714
+  },
+  "features": [
+    "lat_centro_t",
+    "lon_centro_t",
+    "mes",
+    "dia_anio",
+    "horizon_days",
+    "dist_km",
+    "sin_bearing",
+    "cos_bearing",
+    "delta_elev_m",
+    "slope_deg",
+    "n_harm_s",
+    "phi_harm_s",
+    "focos_7d_s",
+    "focos_ultimos_7d_t",
+    "focos_ultimos_30d_t",
+    "frp_ultimos_7d_t",
+    "mediana_historica_mes_t",
+    "anios_desde_ultimo_fuego_t",
+    "active_neighbors_count_t",
+    "neighbors_focos_sum_t",
+    "neighbors_frp_sum_t",
+    "elevacion_m_t",
+    "temperature_2m_max_t",
+    "relative_humidity_2m_t",
+    "wind_speed_10m_max_t",
+    "precipitation_sum_t",
+    "shortwave_radiation_sum_t",
+    "lluvia_acum_7d_t",
+    "lluvia_acum_15d_t",
+    "lluvia_acum_30d_t",
+    "dias_consecutivos_sin_lluvia_t",
+    "vpd_approx_t",
+    "wind_alignment",
+    "upwind_wind_speed",
+    "frac_dentro_t",
+    "is_industrial_s",
+    "industrial_focos_share_s",
+    "focos_30d_s",
+    "focos_ultimos_1d_t",
+    "focos_ultimos_2d_t",
+    "frp_ultimos_1d_t",
+    "fuel_bosque_t",
+    "fuel_pastizal_t",
+    "fuel_agro_t",
+    "fuel_no_combustible_t",
+    "fuel_bosque_s",
+    "fuel_pastizal_s"
+  ],
+  "feature_importance_split": {
+    "lat_centro_t": 1078,
+    "lon_centro_t": 982,
+    "mes": 97,
+    "dia_anio": 1315,
+    "horizon_days": 304,
+    "dist_km": 209,
+    "sin_bearing": 103,
+    "cos_bearing": 123,
+    "delta_elev_m": 30,
+    "slope_deg": 20,
+    "n_harm_s": 56,
+    "phi_harm_s": 143,
+    "focos_7d_s": 92,
+    "focos_ultimos_7d_t": 137,
+    "focos_ultimos_30d_t": 321,
+    "frp_ultimos_7d_t": 214,
+    "mediana_historica_mes_t": 234,
+    "anios_desde_ultimo_fuego_t": 676,
+    "active_neighbors_count_t": 243,
+    "neighbors_focos_sum_t": 410,
+    "neighbors_frp_sum_t": 425,
+    "elevacion_m_t": 678,
+    "temperature_2m_max_t": 698,
+    "relative_humidity_2m_t": 847,
+    "wind_speed_10m_max_t": 647,
+    "precipitation_sum_t": 728,
+    "shortwave_radiation_sum_t": 141,
+    "lluvia_acum_7d_t": 415,
+    "lluvia_acum_15d_t": 489,
+    "lluvia_acum_30d_t": 618,
+    "dias_consecutivos_sin_lluvia_t": 536,
+    "vpd_approx_t": 781,
+    "wind_alignment": 153,
+    "upwind_wind_speed": 106,
+    "frac_dentro_t": 17,
+    "is_industrial_s": 2,
+    "industrial_focos_share_s": 15,
+    "focos_30d_s": 228,
+    "focos_ultimos_1d_t": 97,
+    "focos_ultimos_2d_t": 101,
+    "frp_ultimos_1d_t": 272,
+    "fuel_bosque_t": 306,
+    "fuel_pastizal_t": 304,
+    "fuel_agro_t": 414,
+    "fuel_no_combustible_t": 32,
+    "fuel_bosque_s": 254,
+    "fuel_pastizal_s": 277
+  },
+  "validation_metrics": {
+    "n_samples": 245910,
+    "positive_rate": 0.05139043316096315,
+    "mean_predicted_probability": 0.05026433063887671,
+    "calibration_ratio": 0.9780873121158697,
+    "roc_auc": 0.8358273614741211,
+    "pr_auc": 0.3039592881559955,
+    "brier_score": 0.04155552664015757,
+    "log_loss": 0.15859442178264702,
+    "top_k": {
+      "top_0.1pct": {
+        "precision": 0.74609375,
+        "recall": 0.014576536355484327,
+        "lift": 14.518144800669683
+      },
+      "top_1pct": {
+        "precision": 0.603392489459751,
+        "recall": 0.1174136187587049,
+        "lift": 11.741338851334996
+      },
+      "top_5pct": {
+        "precision": 0.3473869987253652,
+        "recall": 0.337988666933776,
+        "lift": 6.759760082918409
+      }
+    },
+    "categories": {
+      "Extremo": {
+        "share_of_pairs": 0.010000019609804118,
+        "precision": 0.603392489459751,
+        "recall": 0.1174136187587049,
+        "lift": 11.741338851334996,
+        "mean_predicted_probability": 0.5769877076491853
+      },
+      "Alto": {
+        "share_of_pairs": 0.04000007843921647,
+        "precision": 0.2833856260417688,
+        "recall": 0.22057504817507106,
+        "lift": 5.5143653908142625,
+        "mean_predicted_probability": 0.29035219275424073
+      },
+      "Moderado": {
+        "share_of_pairs": 0.10000313756865882,
+        "precision": 0.13204827782298786,
+        "recall": 0.25695915135557973,
+        "lift": 2.5695108933873216,
+        "mean_predicted_probability": 0.12358509350446713
+      },
+      "Bajo": {
+        "share_of_pairs": 0.8499967643823206,
+        "precision": 0.02448927801040477,
+        "recall": 0.40505218171064433,
+        "lift": 0.4765337924609506,
+        "mean_predicted_probability": 0.024142956203310518
+      }
+    }
+  },
+  "test_metrics": {
+    "n_samples": 65110,
+    "positive_rate": 0.04405335684194553,
+    "mean_predicted_probability": 0.03882111480783692,
+    "calibration_ratio": 0.8812294360931261,
+    "roc_auc": 0.8758551752995478,
+    "pr_auc": 0.4114321869372866,
+    "brier_score": 0.03285142295601307,
+    "log_loss": 0.12752600157639482,
+    "top_k": {
+      "top_0.1pct": {
+        "precision": 0.9458483754512635,
+        "recall": 0.021487738866562783,
+        "lift": 21.47051764624373
+      },
+      "top_1pct": {
+        "precision": 0.7326589595375722,
+        "recall": 0.1663249405396539,
+        "lift": 16.631172107183644
+      },
+      "top_5pct": {
+        "precision": 0.3967198901813453,
+        "recall": 0.4503403592225047,
+        "lift": 9.005440643370163
+      }
+    },
+    "categories": {
+      "Extremo": {
+        "share_of_pairs": 0.01081733374762445,
+        "precision": 0.7194388777555111,
+        "recall": 0.17665873862051998,
+        "lift": 16.33107961186048,
+        "mean_predicted_probability": 0.6036034764551781
+      },
+      "Alto": {
+        "share_of_pairs": 0.02331471431977975,
+        "precision": 0.3770339377033938,
+        "recall": 0.19954072008529483,
+        "lift": 8.55857452716066,
+        "mean_predicted_probability": 0.2953556477110677
+      },
+      "Moderado": {
+        "share_of_pairs": 0.06238935175483601,
+        "precision": 0.15160991429233264,
+        "recall": 0.2147133601246617,
+        "lift": 3.441506508488743,
+        "mean_predicted_probability": 0.12222213873673474
+      },
+      "Bajo": {
+        "share_of_pairs": 0.9034786001777598,
+        "precision": 0.019946973362712596,
+        "recall": 0.4090871811695235,
+        "lift": 0.452791223930523,
+        "mean_predicted_probability": 0.019679759978050444
+      }
+    }
+  },
+  "test_metrics_by_horizon": {
+    "24h": {
+      "n_samples": 21052,
+      "positive_rate": 0.03512763836518875,
+      "mean_predicted_probability": 0.02897219487396079,
+      "calibration_ratio": 0.8247692194039448,
+      "roc_auc": 0.8937117098331452,
+      "pr_auc": 0.43433715023495173,
+      "brier_score": 0.025831338168986587,
+      "log_loss": 0.1026767199591491,
+      "top_k": {
+        "top_0.1pct": {
+          "precision": 0.946236559139785,
+          "recall": 0.027143738433066007,
+          "lift": 26.937095779188475
+        },
+        "top_1pct": {
+          "precision": 0.723726977248104,
+          "recall": 0.20604565083281925,
+          "lift": 20.60277920548489
+        },
+        "top_5pct": {
+          "precision": 0.3632228719948018,
+          "recall": 0.5172732880937693,
+          "lift": 10.340088001895202
+        }
+      },
+      "categories": {
+        "Extremo": {
+          "share_of_pairs": 0.008874008581458847,
+          "precision": 0.7435897435897436,
+          "recall": 0.1878470080197409,
+          "lift": 21.16822474256157,
+          "mean_predicted_probability": 0.5924774503850992
+        },
+        "Alto": {
+          "share_of_pairs": 0.01755298400728124,
+          "precision": 0.4012345679012346,
+          "recall": 0.20049352251696484,
+          "lift": 11.422190234651678,
+          "mean_predicted_probability": 0.3019381263420106
+        },
+        "Moderado": {
+          "share_of_pairs": 0.035485199150522256,
+          "precision": 0.17251908396946564,
+          "recall": 0.17427513880320789,
+          "lift": 4.9112064459315,
+          "mean_predicted_probability": 0.12149148968692926
+        },
+        "Bajo": {
+          "share_of_pairs": 0.9380878082607377,
+          "precision": 0.016378294716902678,
+          "recall": 0.43738433066008636,
+          "lift": 0.4662509488008581,
+          "mean_predicted_probability": 0.015034285661986217
+        }
+      }
+    },
+    "48h": {
+      "n_samples": 21802,
+      "positive_rate": 0.04542005420054201,
+      "mean_predicted_probability": 0.03969232308929243,
+      "calibration_ratio": 0.8738942255339442,
+      "roc_auc": 0.8713840151296279,
+      "pr_auc": 0.40599760060887896,
+      "brier_score": 0.03403849122677337,
+      "log_loss": 0.1318903291010723,
+      "top_k": {
+        "top_0.1pct": {
+          "precision": 0.946236559139785,
+          "recall": 0.02100238663484487,
+          "lift": 20.833012549079992
+        },
+        "top_1pct": {
+          "precision": 0.7294372294372294,
+          "recall": 0.16085918854415274,
+          "lift": 16.05980534978148
+        },
+        "top_5pct": {
+          "precision": 0.40004331817197314,
+          "recall": 0.4408114558472554,
+          "lift": 8.80763630104165
+        }
+      },
+      "categories": {
+        "Extremo": {
+          "share_of_pairs": 0.011176151761517615,
+          "precision": 0.6993210475266731,
+          "recall": 0.1720763723150358,
+          "lift": 15.39674621344525,
+          "mean_predicted_probability": 0.6043233984476605
+        },
+        "Alto": {
+          "share_of_pairs": 0.022612466124661248,
+          "precision": 0.39357622243528284,
+          "recall": 0.19594272076372315,
+          "lift": 8.665252152662253,
+          "mean_predicted_probability": 0.2986823556339439
+        },
+        "Moderado": {
+          "share_of_pairs": 0.06349051490514905,
+          "precision": 0.1522963974731091,
+          "recall": 0.21288782816229118,
+          "lift": 3.3530650756311013,
+          "mean_predicted_probability": 0.12326046278259291
+        },
+        "Bajo": {
+          "share_of_pairs": 0.9027208672086721,
+          "precision": 0.021086507517171813,
+          "recall": 0.41909307875894986,
+          "lift": 0.46425544593295937,
+          "mean_predicted_probability": 0.020336849234084672
+        }
+      }
+    },
+    "72h": {
+      "n_samples": 22256,
+      "positive_rate": 0.051617589661303614,
+      "mean_predicted_probability": 0.047804673879924,
+      "calibration_ratio": 0.9261314639757761,
+      "roc_auc": 0.8611756147929324,
+      "pr_auc": 0.4029828976356798,
+      "brier_score": 0.03868852145536922,
+      "log_loss": 0.1480253801798398,
+      "top_k": {
+        "top_0.1pct": {
+          "precision": 0.946236559139785,
+          "recall": 0.01848351186725478,
+          "lift": 18.331668823528084
+        },
+        "top_1pct": {
+          "precision": 0.7508125677139762,
+          "recall": 0.14555765595463138,
+          "lift": 14.545672756913739
+        },
+        "top_5pct": {
+          "precision": 0.4224100563502384,
+          "recall": 0.40936777987817685,
+          "lift": 8.18345178691884
+        }
+      },
+      "categories": {
+        "Extremo": {
+          "share_of_pairs": 0.012402966303829307,
+          "precision": 0.7202797202797203,
+          "recall": 0.1730728838479311,
+          "lift": 13.954152547725327,
+          "mean_predicted_probability": 0.6109198888477877
+        },
+        "Alto": {
+          "share_of_pairs": 0.029782297584457263,
+          "precision": 0.35020021842009463,
+          "recall": 0.20205839109430793,
+          "lift": 6.784513200209168,
+          "mean_predicted_probability": 0.2889475195315091
+        },
+        "Moderado": {
+          "share_of_pairs": 0.08820850860835248,
+          "precision": 0.1426991150442478,
+          "recall": 0.2438563327032136,
+          "lift": 2.764544334219962,
+          "mean_predicted_probability": 0.12176877242669558
+        },
+        "Bajo": {
+          "share_of_pairs": 0.8696062275033609,
+          "precision": 0.02261591591965989,
+          "recall": 0.38101239235454737,
+          "lift": 0.4381435876424595,
+          "mean_predicted_probability": 0.02401189365944159
+        }
+      }
+    }
+  }
+}

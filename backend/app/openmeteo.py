@@ -24,6 +24,8 @@ class WeatherGridForecast:
     lluvia_acum_30d: np.ndarray  # (G, D)
     dias_consecutivos_sin_lluvia: np.ndarray  # (G, D)
     vpd_approx: np.ndarray  # (G, D)
+    wind_direction_10m_dominant: np.ndarray | None = None  # (G, D) degrees [0, 360)
+    wind_gusts_10m_max: np.ndarray | None = None  # (G, D) km/h
 
 
 def _rolling_sum(arr: np.ndarray, window: int) -> np.ndarray:
@@ -55,14 +57,26 @@ def build_weather_features(
     precip: np.ndarray,
     rad: np.ndarray,
     forecast_days: int,
+    wind_dir: np.ndarray | None = None,
+    wind_gusts: np.ndarray | None = None,
 ) -> WeatherGridForecast:
-    """Compute rolling rainfall, dry-streak, and VPD features, sliced to the forecast window."""
+    """Compute rolling rainfall, dry-streak, VPD, and directional wind features."""
     # Replace any occasional API nulls with safe local defaults
     tmax = np.nan_to_num(tmax, nan=22.0).astype(np.float32)
     rh = np.clip(np.nan_to_num(rh, nan=55.0), 0.0, 100.0).astype(np.float32)
     wind = np.nan_to_num(wind, nan=12.0).astype(np.float32)
     precip = np.maximum(np.nan_to_num(precip, nan=0.0), 0.0).astype(np.float32)
     rad = np.maximum(np.nan_to_num(rad, nan=15.0), 0.0).astype(np.float32)
+
+    if wind_dir is None:
+        wdir_clean = np.zeros_like(wind, dtype=np.float32)
+    else:
+        wdir_clean = (np.nan_to_num(wind_dir, nan=0.0) % 360.0).astype(np.float32)
+
+    if wind_gusts is None:
+        wgust_clean = (wind * 1.35).astype(np.float32)
+    else:
+        wgust_clean = np.maximum(np.nan_to_num(wind_gusts, nan=0.0).astype(np.float32), wind)
 
     r7 = _rolling_sum(precip, 7)
     r15 = _rolling_sum(precip, 15)
@@ -87,6 +101,8 @@ def build_weather_features(
         lluvia_acum_30d=r30[:, start_idx:end_idx],
         dias_consecutivos_sin_lluvia=streak[:, start_idx:end_idx],
         vpd_approx=vpd[:, start_idx:end_idx],
+        wind_direction_10m_dominant=wdir_clean[:, start_idx:end_idx],
+        wind_gusts_10m_max=wgust_clean[:, start_idx:end_idx],
     )
 
 
@@ -104,6 +120,8 @@ async def fetch_openmeteo_grid(
         "temperature_2m_max",
         "relative_humidity_2m_mean",
         "wind_speed_10m_max",
+        "wind_direction_10m_dominant",
+        "wind_gusts_10m_max",
         "precipitation_sum",
         "shortwave_radiation_sum",
     ])
@@ -152,8 +170,11 @@ async def fetch_openmeteo_grid(
     def extract(key: str) -> np.ndarray:
         arr = np.empty((n_pts, n_days), dtype=np.float32)
         for idx, item in enumerate(items):
-            vals = item["daily"][key]
-            arr[idx] = [np.nan if v is None else float(v) for v in vals]
+            vals = item["daily"].get(key)
+            if vals is None:
+                arr[idx] = np.nan
+            else:
+                arr[idx] = [np.nan if v is None else float(v) for v in vals]
         return arr
 
     return build_weather_features(
@@ -164,4 +185,6 @@ async def fetch_openmeteo_grid(
         precip=extract("precipitation_sum"),
         rad=extract("shortwave_radiation_sum"),
         forecast_days=forecast_days,
+        wind_dir=extract("wind_direction_10m_dominant"),
+        wind_gusts=extract("wind_gusts_10m_max"),
     )

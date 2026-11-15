@@ -45,3 +45,29 @@ def test_health_endpoint():
         assert body["status"] == "ok"
         assert body["cells_total"] == 64653
         assert body["grid_points"] == 971
+
+
+def test_predict_with_stability_and_confidence_decay():
+    models_dir = Path(__file__).resolve().parents[1] / "models"
+    predictor = FireRiskPredictor.from_bundle(models_dir / "fire_risk_bundle.joblib")
+    X = np.zeros((4, len(predictor.feature_columns)), dtype=np.float32)
+
+    probs_ref = predictor.predict_probabilities(X)
+    probs, stability = predictor.predict_with_stability(X)
+
+    assert np.allclose(probs, probs_ref, atol=1e-6)
+    assert stability.shape == (4,)
+    assert np.all((stability >= 0.2) & (stability <= 1.0))
+
+    from app.service import ForecastService
+
+    svc = ForecastService(Settings(models_dir=models_dir))
+    stab = np.array([0.95, 0.95], dtype=np.float32)
+    pct_day0, lvl_day0 = svc._compute_confidence(stab, np.array([0, 0], dtype=np.int32), is_stale=False)
+    pct_day14, lvl_day14 = svc._compute_confidence(stab, np.array([14, 14], dtype=np.int32), is_stale=False)
+    pct_stale, _ = svc._compute_confidence(stab, np.array([0, 0], dtype=np.int32), is_stale=True)
+
+    assert np.all(pct_day0 > pct_day14)
+    assert np.all(pct_day0 > pct_stale)
+    assert lvl_day0[0] == "Alta"
+    assert lvl_day14[0] in ("Media", "Baja")

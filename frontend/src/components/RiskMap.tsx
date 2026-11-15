@@ -28,6 +28,7 @@ const EMPTY_FC: GeoJSON.FeatureCollection = {
 const SOURCE_ID = 'fire-risk-cells';
 const LAYER_ID = 'fire-risk-circles';
 const TERRAIN_SOURCE_ID = 'terrain-dem';
+const HILLSHADE_SOURCE_ID = 'hillshade-dem';
 const HILLSHADE_LAYER_ID = 'terrain-hillshade';
 const ROADS_SOURCE_ID = 'ign-hibrido-roads';
 const ROADS_LAYER_ID = 'ign-hibrido-roads-layer';
@@ -121,6 +122,7 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
           ],
           'circle-stroke-width': 0.5,
           'circle-stroke-color': '#07100F',
+          'circle-pitch-alignment': 'map',
         },
       });
 
@@ -237,12 +239,21 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
           maxzoom: 15,
         });
       }
+      if (!map.getSource(HILLSHADE_SOURCE_ID)) {
+        map.addSource(HILLSHADE_SOURCE_ID, {
+          type: 'raster-dem',
+          tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+          encoding: 'terrarium',
+          tileSize: 256,
+          maxzoom: 15,
+        });
+      }
       if (!map.getLayer(HILLSHADE_LAYER_ID)) {
         map.addLayer(
           {
             id: HILLSHADE_LAYER_ID,
             type: 'hillshade',
-            source: TERRAIN_SOURCE_ID,
+            source: HILLSHADE_SOURCE_ID,
             paint: {
               'hillshade-exaggeration': 0.85,
               'hillshade-shadow-color': '#020605',
@@ -256,14 +267,17 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
       } else {
         map.setLayoutProperty(HILLSHADE_LAYER_ID, 'visibility', 'visible');
       }
-      map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: 2.5 });
-      map.easeTo({ pitch: 55, duration: 700 });
+      map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: 1.6 });
+      map.easeTo({ pitch: 52, duration: 700 });
     } else {
       if (map.getLayer(HILLSHADE_LAYER_ID)) {
         map.setLayoutProperty(HILLSHADE_LAYER_ID, 'visibility', 'none');
       }
       map.setTerrain(null);
       map.easeTo({ pitch: 0, bearing: 0, duration: 500 });
+    }
+    if (map.getLayer(LAYER_ID)) {
+      map.moveLayer(LAYER_ID);
     }
   }, [is3D]);
 
@@ -278,6 +292,7 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
             'https://wms.ign.gob.ar/geoserver/gwc/service/tms/1.0.0/mapabase_hibrido@EPSG%3A3857@png/{z}/{x}/{y}.png',
           ],
           scheme: 'tms',
+          bounds: [-75, -56, -52, -21],
           tileSize: 256,
           attribution: '© IGN Argentina · Mapa Híbrido',
         });
@@ -298,6 +313,9 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
       }
     } else if (map.getLayer(ROADS_LAYER_ID)) {
       map.setLayoutProperty(ROADS_LAYER_ID, 'visibility', 'none');
+    }
+    if (map.getLayer(LAYER_ID)) {
+      map.moveLayer(LAYER_ID);
     }
   }, [showRoads]);
 

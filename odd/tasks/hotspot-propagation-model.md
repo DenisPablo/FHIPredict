@@ -1,0 +1,34 @@
+# Objective: Implement `lgbm-spread-v1` hotspot propagation model (24h–72h) and head-to-head comparative benchmark against `lgbm-risk-24h-v2`
+Branch: `feat/propagation-model-v3` | Delivery strategy: `single-pr` (forecast ~450 lines across code, training, benchmark, and tests; `exception-ok` if slightly over 400 to keep tests/docs with code)
+Test runner: `C:\Users\Denis\Documents\codigo\FHIPredict\backend\.venv\Scripts\pytest.exe`
+
+## Specs
+
+- **S1**: "Quiero que analices que tan dificil es extender el modelo para que calcule la propagacion estimada de un hotspost" / "Hazme una propuesta formal de modificacion del proyecto otra rama, vamos a sacar otro modelo medir el rendimiento de ambos" / "Como se propagra en las proximas 24 hs - 72 hs."
+  - Scope: Extend `openmeteo.py` with `wind_direction_10m_dominant` and `wind_gusts_10m_max` (backward-compatible defaults so existing `v2` callers and tests never break), implement `backend/app/spread.py` (`SpreadPredictor`, 8-neighbor spatial graph builder, bearing/slope/wind-alignment features, and multi-horizon 24h/48h/72h neighbor propagation scoring), and expose optional propagation inference in `config.py`, `service.py`, and `main.py` (`/api/v1/spread` and optional fusion, keeping `/api/v1/forecast` and `/api/v1/health` backward-compatible).
+  - Assumption: Unified model taking `horizon_days` in `{1, 2, 3}` (24h, 48h, 72h) as an explicit feature so a single self-contained `spread_bundle.joblib` serves all 3 horizons.
+  - Checks: `pytest backend/tests/test_forecast.py backend/tests/test_spread.py`
+
+- **S2**: "Avanza con la implementacion y prepara un set de pruebas para medir el renidmiento de ambos modelos y compararlos" (Training & Model Artifact Generation)
+  - Scope: Implement `backend/scripts/train_spread.py` to build the leak-free spatial neighbor propagation dataset `(source_cell s -> neighbor_cell t, date d, horizon_days in {1, 2, 3})` from `ModeloPredictivo/firms_argentina_harmonized.parquet` and `ModeloPredictivo/data/weather/nasapower/nasapower_*.parquet` using the identical temporal split (`train`: 2018–2023, `val`: 2024–2025, `test`: 2026), train `lgbm-spread-v1` with prior-correction calibration, and export `backend/models/spread_bundle.joblib` + `backend/models/spread_metadata.json`.
+  - Checks: Run `train_spread.py` and verify `spread_bundle.joblib` and `spread_metadata.json` are generated and load cleanly via `SpreadPredictor.from_bundle`.
+
+- **S3**: "prepara un set de pruebas para medir el renidmiento de ambos modelos y compararlos" (Head-to-Head Benchmark & Automated Comparison Test Suite)
+  - Scope: Implement `backend/scripts/compare_models.py` and `backend/tests/test_model_comparison.py` to evaluate `lgbm-risk-24h-v2` vs `lgbm-spread-v1` (plus naive spatial recency baseline and `v2 + spread` fusion) on the unseen 2026 holdout (and 2024–2025 validation) across Track A (global 24h cell risk) and Track B (conditional neighbor propagation at 24h, 48h, and 72h: ROC-AUC, PR-AUC, Brier score, log-loss, calibration ratio, Top-k precision/recall/lift, and inference throughput), writing `backend/models/comparison_report.json` and `specs/05-comparison-results.md`.
+  - Checks: Run `compare_models.py` and `pytest backend/tests/test_model_comparison.py`.
+
+## Tasks
+
+- [x] **T1** (S1) — Implement weather directional features (`openmeteo.py`), spatial propagation module (`spread.py`), API/service integration (`config.py`, `service.py`, `main.py`), and unit tests (`tests/test_spread.py`) | Route: `inline` (sequential foundation required by T2/T3; no Writer trigger) | Status: `done` (`b3324e1`, RED `ModuleNotFoundError: No module named 'app.spread'` -> GREEN `6 passed in 1.87s`)
+- [x] **T2** (S2) — Implement `scripts/train_spread.py`, train `lgbm-spread-v1` on 2018–2023 (val 2024–2025, test 2026), and export `models/spread_bundle.joblib` + `models/spread_metadata.json` | Route: `inline` (depends on T1 `SpreadPredictor` schema) | Status: `done` (`baa367a`, trained 1,171,634 pairs, val PR-AUC=0.2922, test PR-AUC=0.3945, test ROC-AUC=0.8749)
+- [x] **T3** (S3) — Implement `scripts/compare_models.py`, run full benchmark generating `models/comparison_report.json` and `specs/05-comparison-results.md`, and add `tests/test_model_comparison.py` | Route: `inline` (depends on T2 trained bundle) | Status: `done` (RED `AssertionError: comparison_report.json must be generated` -> GREEN `12 passed in 3.00s`)
+
+## Log
+
+- **L1 (2026-11-15)**: User request verbatim:
+  - "Quiero que analices que tan dificil es extender el modelo para que calcule la propagacion estimada de un hotspost"
+  - "Hazme una propuesta formal de modificacion del proyecto otra rama, vamos a sacar otro modelo medir el rendimiento de ambos"
+  - "Como se propagra en las proximas 24 hs - 72 hs. Que seria ese margen_}"
+  - "Avanza con la implementacion y prepara un set de pruebas para medir el renidmiento de ambos modelos y compararlos"
+- **L2 (2026-11-15)**: Created formal proposal `specs/04-propagation-proposal.md` on branch `feat/propagation-model-v3` (`caeca03`). Proceeding with T1 → T2 → T3.
+- **L3 (2026-11-15)**: Completed T1 (`b3324e1`), T2 (`baa367a`), and T3 (`compare_models.py`, `comparison_report.json`, `05-comparison-results.md`, `test_model_comparison.py`). Full suite: `12 passed in 3.00s`. Engram mirror status: `pending` (multi-repo parent workspace `C:\Users\Denis\Documents\codigo` without active project session).

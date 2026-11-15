@@ -26,6 +26,8 @@ export const COPY = {
     enable3d: 'Relieve 3D',
     disable3d: 'Vista 2D',
     roadsBtn: 'Rutas y calles',
+    spreadBtn: 'Propagación',
+    spreadSources: 'focos activos',
     legendTitle: 'Índice de riesgo (prob. 24h)',
     demoBadge: 'Demo experimental',
     disclaimer:
@@ -59,6 +61,10 @@ export const COPY = {
         Media: 'Media',
         Baja: 'Baja',
       } as Record<'Alta' | 'Media' | 'Baja', string>,
+      spread: 'Propagación',
+      baseRisk: 'Riesgo base',
+      fusedRisk: 'Combinado',
+      horizon: 'Horizonte',
     },
     nav: {
       title: 'Navegación rápida',
@@ -93,6 +99,8 @@ export const COPY = {
     enable3d: '3D Terrain',
     disable3d: '2D View',
     roadsBtn: 'Roads & streets',
+    spreadBtn: 'Spread',
+    spreadSources: 'active sources',
     legendTitle: 'Fire risk index (24h prob.)',
     demoBadge: 'Experimental demo',
     disclaimer:
@@ -126,6 +134,10 @@ export const COPY = {
         Media: 'Medium',
         Baja: 'Low',
       } as Record<'Alta' | 'Media' | 'Baja', string>,
+      spread: 'Spread',
+      baseRisk: 'Base risk',
+      fusedRisk: 'Combined',
+      horizon: 'Horizon',
     },
     nav: {
       title: 'Quick jump',

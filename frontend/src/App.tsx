@@ -1,7 +1,7 @@
 import { Suspense, lazy, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ExternalLink, Globe, Loader2 } from 'lucide-react';
-import { fetchForecast, type RiskCategory } from './api/forecast';
+import { fetchForecast, fetchSpread, type RiskCategory, type SpreadHorizonHours } from './api/forecast';
 import type { FlyTarget } from './components/RiskMap';
 import { RiskLegend } from './components/RiskLegend';
 import { NavigationPanel } from './components/NavigationPanel';
@@ -19,6 +19,8 @@ export function App() {
   const [dayOffset, setDayOffset] = useState<number>(0);
   const [minRisk, setMinRisk] = useState<RiskCategory>('Moderado');
   const [refreshNonce, setRefreshNonce] = useState(0);
+  const [showSpread, setShowSpread] = useState(true);
+  const [spreadHorizon, setSpreadHorizon] = useState<SpreadHorizonHours>(24);
   const [flyTarget, setFlyTarget] = useState<FlyTarget | null>(null);
   const [activeNavId, setActiveNavId] = useState<string>('arg');
 
@@ -42,12 +44,39 @@ export function App() {
     placeholderData: (prev) => prev,
   });
 
+  const spreadDayOffset = mode === 'day' ? dayOffset : 0;
+  const spreadQuery = useQuery({
+    queryKey: ['spread', spreadHorizon, spreadDayOffset, minRisk, refreshNonce],
+    queryFn: ({ signal }) =>
+      fetchSpread(
+        {
+          horizonHours: spreadHorizon,
+          dayOffset: spreadDayOffset,
+          minRisk,
+          refresh: refreshNonce > 0,
+        },
+        signal,
+      ),
+    enabled: showSpread,
+    staleTime: 10 * 60 * 1000,
+    placeholderData: (prev) => prev,
+  });
+
   const meta = query.data?.meta;
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-space-base">
       <Suspense fallback={<div className="h-full w-full bg-space-base" />}>
-        <RiskMap data={query.data} lang={lang} flyTarget={flyTarget} />
+        <RiskMap
+          data={query.data}
+          spreadData={showSpread ? spreadQuery.data : undefined}
+          showSpread={showSpread}
+          spreadHorizon={spreadHorizon}
+          onToggleSpread={() => setShowSpread((prev) => !prev)}
+          onChangeSpreadHorizon={setSpreadHorizon}
+          lang={lang}
+          flyTarget={flyTarget}
+        />
       </Suspense>
 
       {/* Top floating header */}
@@ -70,7 +99,7 @@ export function App() {
 
         {/* Summary chips + external link + language toggle */}
         <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-2xl border border-space-border bg-space-surface/95 px-3.5 py-2 shadow-xl backdrop-blur-md">
-          {query.isFetching && (
+          {(query.isFetching || (showSpread && spreadQuery.isFetching)) && (
             <span className="inline-flex items-center gap-1.5 font-mono text-xs text-lime-brand">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               {t.calculating}

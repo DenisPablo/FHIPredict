@@ -66,3 +66,64 @@ export async function fetchForecast(q: ForecastQuery, signal?: AbortSignal): Pro
   }
   return res.json() as Promise<ForecastResponse>;
 }
+
+export type SpreadHorizonHours = 24 | 48 | 72;
+
+export interface SpreadProperties {
+  cell_id: number;
+  propagacion_pct: number;
+  riesgo_base_pct: number;
+  riesgo_fusionado_pct: number;
+  categoria: RiskCategory;
+  confianza_pct?: number;
+  confianza_nivel?: ConfidenceLevel;
+  horizon_hours: number;
+}
+
+export interface SpreadFeature {
+  type: 'Feature';
+  geometry: {
+    type: 'Point';
+    coordinates: [number, number];
+  };
+  properties: SpreadProperties;
+}
+
+export interface SpreadResponse {
+  type: 'FeatureCollection';
+  meta: {
+    model_version: string;
+    baseline_model_version: string;
+    generated_at: string;
+    horizon_hours: number;
+    fecha_desde: string;
+    fecha_hasta: string;
+    active_source_cells: number;
+    counts: Record<RiskCategory, number>;
+    returned: number;
+  };
+  features: SpreadFeature[];
+}
+
+export interface SpreadQuery {
+  horizonHours: SpreadHorizonHours;
+  dayOffset: number;
+  minRisk: RiskCategory;
+  refresh?: boolean;
+}
+
+export async function fetchSpread(q: SpreadQuery, signal?: AbortSignal): Promise<SpreadResponse> {
+  const params = new URLSearchParams({
+    horizon_hours: String(q.horizonHours),
+    day_offset: String(q.dayOffset),
+    min_risk: q.minRisk,
+  });
+  if (q.refresh) params.set('refresh', 'true');
+
+  const res = await fetch(`/api/v1/spread?${params.toString()}`, { signal });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `API error (${res.status})`);
+  }
+  return res.json() as Promise<SpreadResponse>;
+}

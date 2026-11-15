@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { Mountain, Route } from 'lucide-react';
+import { Flame, Mountain, Route } from 'lucide-react';
 import * as maplibregl from 'maplibre-gl';
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import type { ConfidenceLevel, ForecastResponse, RiskCategory } from '../api/forecast';
+import type {
+  ConfidenceLevel,
+  ForecastResponse,
+  RiskCategory,
+  SpreadHorizonHours,
+  SpreadResponse,
+} from '../api/forecast';
 import { COPY, type Lang } from '../i18n';
 
 maplibregl.setWorkerUrl(maplibreWorkerUrl);
@@ -16,6 +22,11 @@ export interface FlyTarget {
 
 interface RiskMapProps {
   data?: ForecastResponse;
+  spreadData?: SpreadResponse;
+  showSpread: boolean;
+  spreadHorizon: SpreadHorizonHours;
+  onToggleSpread: () => void;
+  onChangeSpreadHorizon: (h: SpreadHorizonHours) => void;
   lang: Lang;
   flyTarget?: FlyTarget | null;
 }
@@ -27,19 +38,34 @@ const EMPTY_FC: GeoJSON.FeatureCollection = {
 
 const SOURCE_ID = 'fire-risk-cells';
 const LAYER_ID = 'fire-risk-circles';
+const SPREAD_SOURCE_ID = 'fire-spread-cells';
+const SPREAD_LAYER_ID = 'fire-spread-circles';
 const TERRAIN_SOURCE_ID = 'terrain-dem';
 const HILLSHADE_SOURCE_ID = 'hillshade-dem';
 const HILLSHADE_LAYER_ID = 'terrain-hillshade';
 const ROADS_SOURCE_ID = 'ign-hibrido-roads';
 const ROADS_LAYER_ID = 'ign-hibrido-roads-layer';
 
-export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
+export function RiskMap({
+  data,
+  spreadData,
+  showSpread,
+  spreadHorizon,
+  onToggleSpread,
+  onChangeSpreadHorizon,
+  lang,
+  flyTarget,
+}: RiskMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
   const readyRef = useRef(false);
   const latestDataRef = useRef<ForecastResponse | undefined>(data);
   latestDataRef.current = data;
+  const latestSpreadRef = useRef<SpreadResponse | undefined>(spreadData);
+  latestSpreadRef.current = spreadData;
+  const showSpreadRef = useRef<boolean>(showSpread);
+  showSpreadRef.current = showSpread;
   const langRef = useRef<Lang>(lang);
   langRef.current = lang;
   const [is3D, setIs3D] = useState(false);
@@ -133,6 +159,115 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
         map.getCanvas().style.cursor = '';
       });
 
+      map.addSource(SPREAD_SOURCE_ID, {
+        type: 'geojson',
+        data: EMPTY_FC,
+      });
+
+      map.addLayer({
+        id: SPREAD_LAYER_ID,
+        type: 'circle',
+        source: SPREAD_SOURCE_ID,
+        layout: {
+          visibility: showSpreadRef.current ? 'visible' : 'none',
+        },
+        paint: {
+          'circle-radius': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            3.5, 5.4,
+            6, 8.8,
+            9, 13.5,
+            12, 19.5,
+          ],
+          'circle-color': [
+            'match',
+            ['get', 'categoria'],
+            'Extremo', '#FF6759',
+            'Alto', '#FF9C55',
+            'Moderado', '#68D9D0',
+            '#3D786E',
+          ],
+          'circle-opacity': 0.35,
+          'circle-stroke-width': 1.8,
+          'circle-stroke-color': '#B8EE68',
+          'circle-pitch-alignment': 'map',
+        },
+      });
+
+      map.on('mouseenter', SPREAD_LAYER_ID, () => {
+        map.getCanvas().style.cursor = 'pointer';
+      });
+      map.on('mouseleave', SPREAD_LAYER_ID, () => {
+        map.getCanvas().style.cursor = '';
+      });
+
+      map.on('click', SPREAD_LAYER_ID, (e: maplibregl.MapLayerMouseEvent) => {
+        const feat = e.features?.[0];
+        if (!feat || feat.geometry.type !== 'Point') return;
+        const p = feat.properties as Record<string, unknown>;
+        const coords = feat.geometry.coordinates.slice() as [number, number];
+        const cat = p.categoria as RiskCategory;
+        const badgeColor =
+          cat === 'Extremo'
+            ? '#FF6759'
+            : cat === 'Alto'
+              ? '#FF9C55'
+              : cat === 'Moderado'
+                ? '#68D9D0'
+                : '#3D786E';
+
+        popupRef.current?.remove();
+        const t = COPY[langRef.current];
+        const [lon, lat] = coords;
+        const latStr = lat.toFixed(4);
+        const lonStr = lon.toFixed(4);
+        const mapsUrl = `https://www.google.com/maps?q=${latStr},${lonStr}`;
+        const confLevel =
+          typeof p.confianza_nivel === 'string'
+            ? (p.confianza_nivel as ConfidenceLevel)
+            : undefined;
+        const confPct = typeof p.confianza_pct === 'number' ? p.confianza_pct : undefined;
+        const confColor =
+          confLevel === 'Alta'
+            ? '#B8EE68'
+            : confLevel === 'Media'
+              ? '#68D9D0'
+              : '#FF9C55';
+        const confRow =
+          confPct !== undefined && confLevel
+            ? `<div title="${t.popup.confidenceHint}" style="display:flex;align-items:center;justify-content:space-between;font-family:'DM Mono',monospace;font-size:10px;color:#93A39C;margin-bottom:6px;cursor:help;"><span>${t.popup.confidence}</span><span style="color:${confColor};font-weight:600;">${t.popup.confidenceLevels[confLevel] ?? confLevel} · ${Math.round(confPct)}%</span></div>`
+            : '';
+
+        popupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: '300px' })
+          .setLngLat(coords)
+          .setHTML(`
+            <div style="font-family:'DM Sans',sans-serif;font-size:12px;line-height:1.45;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;">
+                <span style="font-family:'DM Mono',monospace;color:#93A39C;">${t.popup.cell} #${p.cell_id}</span>
+                <span style="background:${badgeColor}22;color:${badgeColor};border:1px solid #B8EE68;padding:2px 8px;border-radius:999px;font-weight:600;font-size:11px;">
+                  ${t.popup.spread} · ${p.propagacion_pct}%
+                </span>
+              </div>
+              ${confRow}
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-family:'DM Mono',monospace;font-size:11px;color:#EFF5ED;">
+                <div>${t.popup.spread}: <b>${p.propagacion_pct}%</b></div>
+                <div>${t.popup.baseRisk}: <b>${p.riesgo_base_pct}%</b></div>
+                <div>${t.popup.fusedRisk}: <b>${p.riesgo_fusionado_pct}%</b></div>
+                <div>${t.popup.horizon}: <b>${p.horizon_hours}h</b></div>
+              </div>
+              <div style="margin-top:8px;padding-top:8px;border-top:1px solid #21312D;display:flex;align-items:center;justify-content:space-between;gap:8px;font-family:'DM Mono',monospace;font-size:11px;">
+                <span style="color:#93A39C;">${latStr}, ${lonStr}</span>
+                <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" style="color:#B8EE68;text-decoration:none;font-weight:600;">
+                  ${t.popup.openMaps} ↗
+                </a>
+              </div>
+            </div>
+          `)
+          .addTo(map);
+      });
+
       map.on('click', LAYER_ID, (e: maplibregl.MapLayerMouseEvent) => {
         const feat = e.features?.[0];
         if (!feat || feat.geometry.type !== 'Point') return;
@@ -216,6 +351,11 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
           latestDataRef.current as unknown as GeoJSON.FeatureCollection,
         );
       }
+      if (latestSpreadRef.current) {
+        (map.getSource(SPREAD_SOURCE_ID) as maplibregl.GeoJSONSource)?.setData(
+          latestSpreadRef.current as unknown as GeoJSON.FeatureCollection,
+        );
+      }
     });
 
     mapRef.current = map;
@@ -232,6 +372,20 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
     const src = mapRef.current.getSource(SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
     src?.setData(data as unknown as GeoJSON.FeatureCollection);
   }, [data]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !readyRef.current) return;
+    const src = map.getSource(SPREAD_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
+    if (showSpread && spreadData) {
+      src?.setData(spreadData as unknown as GeoJSON.FeatureCollection);
+    } else if (!showSpread) {
+      src?.setData(EMPTY_FC);
+    }
+    if (map.getLayer(SPREAD_LAYER_ID)) {
+      map.setLayoutProperty(SPREAD_LAYER_ID, 'visibility', showSpread ? 'visible' : 'none');
+    }
+  }, [spreadData, showSpread]);
 
   useEffect(() => {
     if (!mapRef.current || !flyTarget) return;
@@ -295,6 +449,9 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
     if (map.getLayer(LAYER_ID)) {
       map.moveLayer(LAYER_ID);
     }
+    if (map.getLayer(SPREAD_LAYER_ID)) {
+      map.moveLayer(SPREAD_LAYER_ID);
+    }
   }, [is3D]);
 
   useEffect(() => {
@@ -333,14 +490,49 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
     if (map.getLayer(LAYER_ID)) {
       map.moveLayer(LAYER_ID);
     }
+    if (map.getLayer(SPREAD_LAYER_ID)) {
+      map.moveLayer(SPREAD_LAYER_ID);
+    }
   }, [showRoads]);
 
   const t = COPY[lang];
+  const spreadHorizons: SpreadHorizonHours[] = [24, 48, 72];
 
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
-      <div className="absolute right-4 top-20 z-10 flex items-center gap-2">
+      <div className="absolute right-4 top-20 z-10 flex flex-wrap items-center justify-end gap-2">
+        <div className="inline-flex items-center gap-1 rounded-xl border border-space-border bg-space-surface/95 p-1 shadow-xl backdrop-blur-md">
+          <button
+            type="button"
+            onClick={onToggleSpread}
+            aria-pressed={showSpread}
+            className={
+              showSpread
+                ? 'inline-flex items-center gap-1.5 rounded-lg bg-lime-brand px-2.5 py-1 font-mono text-xs font-semibold text-space-base transition'
+                : 'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-mono text-xs font-medium text-fcText-primary hover:bg-space-elevated transition'
+            }
+          >
+            <Flame className="h-3.5 w-3.5" />
+            {t.spreadBtn}
+          </button>
+          {showSpread &&
+            spreadHorizons.map((h) => (
+              <button
+                key={h}
+                type="button"
+                onClick={() => onChangeSpreadHorizon(h)}
+                aria-pressed={spreadHorizon === h}
+                className={
+                  spreadHorizon === h
+                    ? 'rounded-lg bg-space-elevated px-2 py-1 font-mono text-[11px] font-semibold text-lime-brand border border-lime-brand/60 transition'
+                    : 'rounded-lg px-2 py-1 font-mono text-[11px] text-fcText-secondary hover:text-fcText-primary transition'
+                }
+              >
+                {h}h
+              </button>
+            ))}
+        </div>
         <button
           type="button"
           onClick={() => setShowRoads((prev) => !prev)}

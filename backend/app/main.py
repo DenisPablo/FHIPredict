@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -21,7 +22,12 @@ _service: ForecastService | None = None
 async def lifespan(app: FastAPI):
     global _service
     _service = ForecastService(get_settings())
-    yield
+    warmup_task = asyncio.create_task(_service.warm_up())
+    try:
+        yield
+    finally:
+        if not warmup_task.done():
+            warmup_task.cancel()
 
 
 def create_app() -> FastAPI:

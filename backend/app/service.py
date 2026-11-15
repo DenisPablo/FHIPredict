@@ -129,26 +129,36 @@ class ForecastService:
         self._cache_path: Path = settings.models_dir / ".forecast_cache.joblib"
         self._cache: CachedForecast | None = self._load_disk_cache()
         self._lock = asyncio.Lock()
+        self._refresh_task: asyncio.Task[None] | None = None
 
     def _load_disk_cache(self) -> CachedForecast | None:
         if not self._cache_path.exists():
             return None
         try:
             payload = joblib.load(self._cache_path)
-            if "stability" not in payload:
-                return None
             saved_epoch = float(payload["saved_epoch"])
             age_s = max(0.0, time.time() - saved_epoch)
             remaining = max(0.0, self.settings.cache_ttl_s - age_s)
-            return CachedForecast(
+            weather = payload["weather"]
+            if "stability" in payload:
+                probs = payload["probs"]
+                stability = payload["stability"]
+                upgraded = False
+            else:
+                probs, stability = self._score_all_days(weather)
+                upgraded = True
+            cached = CachedForecast(
                 generated_at=payload["generated_at"],
                 expires_at=time.monotonic() + remaining,
                 dates=payload["dates"],
-                probs=payload["probs"],
-                stability=payload["stability"],
-                weather=payload["weather"],
+                probs=probs,
+                stability=stability,
+                weather=weather,
                 is_stale=False,
             )
+            if upgraded:
+                self._save_disk_cache(cached)
+            return cached
         except Exception as exc:
             logger.warning("Ignoring corrupt forecast disk cache: %s", exc)
             return None
@@ -172,11 +182,40 @@ class ForecastService:
         except Exception as exc:
             logger.warning("Failed to persist forecast disk cache: %s", exc)
 
+    def _schedule_background_refresh(self) -> None:
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return
+
+        async def _run() -> None:
+            try:
+                await self._refresh_forecast(force_refresh=True)
+            except Exception as exc:
+                logger.warning("Background forecast refresh failed: %s", exc)
+
+        self._refresh_task = asyncio.create_task(_run())
+
+    async def warm_up(self) -> None:
+        """Pre-warm forecast cache in the background on server startup."""
+        if self._cache is not None and time.monotonic() < self._cache.expires_at:
+            return
+        try:
+            await self._refresh_forecast(force_refresh=True)
+        except Exception as exc:
+            logger.warning("Startup forecast warm-up failed: %s", exc)
+
     async def get_forecast(self, force_refresh: bool = False) -> CachedForecast:
         now = time.monotonic()
-        if not force_refresh and self._cache is not None and now < self._cache.expires_at:
+        if not force_refresh and self._cache is not None:
+            if now < self._cache.expires_at:
+                return self._cache
+            # Serve stale disk/memory cache immediately while refreshing in the background.
+            self._cache.is_stale = True
+            self._schedule_background_refresh()
             return self._cache
 
+        return await self._refresh_forecast(force_refresh=force_refresh)
+
+    async def _refresh_forecast(self, force_refresh: bool = False) -> CachedForecast:
         async with self._lock:
             now = time.monotonic()
             if not force_refresh and self._cache is not None and now < self._cache.expires_at:
@@ -200,7 +239,7 @@ class ForecastService:
                 raise
 
             probs, stability = self._score_all_days(weather)
-            self._cache = CachedForecast(
+            new_cache = CachedForecast(
                 generated_at=datetime.now(timezone.utc).isoformat(),
                 expires_at=time.monotonic() + self.settings.cache_ttl_s,
                 dates=weather.dates,
@@ -209,8 +248,9 @@ class ForecastService:
                 weather=weather,
                 is_stale=False,
             )
-            self._save_disk_cache(self._cache)
-            return self._cache
+            self._cache = new_cache
+            asyncio.create_task(asyncio.to_thread(self._save_disk_cache, new_cache))
+            return new_cache
 
     def _score_all_days(self, weather: WeatherGridForecast) -> tuple[np.ndarray, np.ndarray]:
         b = self.baseline

@@ -114,6 +114,23 @@ export function App() {
         </div>
       </header>
 
+      {/* Cold-start notice while initial forecast is being computed */}
+      {query.isLoading && !query.data && !query.isError && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="pointer-events-none absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-space-border bg-space-surface/95 px-5 py-4 text-center shadow-2xl backdrop-blur-md max-w-sm"
+        >
+          <div className="flex items-center justify-center gap-2 font-title text-sm font-bold text-fcText-primary">
+            <Loader2 className="h-4 w-4 animate-spin text-lime-brand" />
+            <span>{t.firstLoadTitle}</span>
+          </div>
+          <p className="mt-1.5 text-xs text-fcText-secondary leading-relaxed">
+            {t.firstLoadHint}
+          </p>
+        </div>
+      )}
+
       {/* Error banner */}
       {query.isError && (
         <div className="absolute left-1/2 top-20 z-20 -translate-x-1/2 rounded-xl border border-sensor-high/50 bg-space-surface/95 px-4 py-2 text-xs text-sensor-high shadow-xl">

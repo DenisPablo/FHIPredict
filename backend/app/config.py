@@ -1,0 +1,25 @@
+"""Application configuration via environment variables."""
+
+from functools import lru_cache
+from pathlib import Path
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", frozen=True)
+
+    models_dir: Path = Field(default=Path(__file__).resolve().parents[1] / "models")
+    static_dir: Path | None = None
+    openmeteo_url: str = "https://api.open-meteo.com/v1/forecast"
+    forecast_days: int = Field(default=15, ge=1, le=16)
+    past_days: int = Field(default=30, ge=29, le=60)
+    cache_ttl_s: int = Field(default=3600, ge=60)
+    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    chunk_size: int = Field(default=100, ge=1, le=200)
+    max_concurrency: int = Field(default=1, ge=1, le=4)
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

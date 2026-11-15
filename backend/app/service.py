@@ -60,7 +60,9 @@ class CachedForecast:
     expires_at: float
     dates: list[str]  # length D
     probs: np.ndarray  # (N, D) float32
+    stability: np.ndarray  # (N, D) float16
     weather: WeatherGridForecast
+    is_stale: bool = False
 
 
 def load_baseline(parquet_path: str) -> CellBaseline:
@@ -133,6 +135,8 @@ class ForecastService:
             return None
         try:
             payload = joblib.load(self._cache_path)
+            if "stability" not in payload:
+                return None
             saved_epoch = float(payload["saved_epoch"])
             age_s = max(0.0, time.time() - saved_epoch)
             remaining = max(0.0, self.settings.cache_ttl_s - age_s)
@@ -141,7 +145,9 @@ class ForecastService:
                 expires_at=time.monotonic() + remaining,
                 dates=payload["dates"],
                 probs=payload["probs"],
+                stability=payload["stability"],
                 weather=payload["weather"],
+                is_stale=False,
             )
         except Exception as exc:
             logger.warning("Ignoring corrupt forecast disk cache: %s", exc)
@@ -156,6 +162,7 @@ class ForecastService:
                     "generated_at": cached.generated_at,
                     "dates": cached.dates,
                     "probs": cached.probs,
+                    "stability": cached.stability,
                     "weather": cached.weather,
                 },
                 tmp_path,
@@ -188,25 +195,29 @@ class ForecastService:
                 if self._cache is not None:
                     logger.warning("Open-Meteo refresh failed (%s); serving stale cached forecast", exc)
                     self._cache.expires_at = time.monotonic() + 60.0
+                    self._cache.is_stale = True
                     return self._cache
                 raise
 
-            probs = self._score_all_days(weather)
+            probs, stability = self._score_all_days(weather)
             self._cache = CachedForecast(
                 generated_at=datetime.now(timezone.utc).isoformat(),
                 expires_at=time.monotonic() + self.settings.cache_ttl_s,
                 dates=weather.dates,
                 probs=probs,
+                stability=stability,
                 weather=weather,
+                is_stale=False,
             )
             self._save_disk_cache(self._cache)
             return self._cache
 
-    def _score_all_days(self, weather: WeatherGridForecast) -> np.ndarray:
+    def _score_all_days(self, weather: WeatherGridForecast) -> tuple[np.ndarray, np.ndarray]:
         b = self.baseline
         n_cells = len(b.cell_id)
         n_days = len(weather.dates)
         probs = np.empty((n_cells, n_days), dtype=np.float32)
+        stability = np.empty((n_cells, n_days), dtype=np.float16)
         g_idx = b.cell_to_grid
 
         for d_idx, date_str in enumerate(weather.dates):
@@ -236,9 +247,37 @@ class ForecastService:
                 weather.dias_consecutivos_sin_lluvia[g_idx, d_idx],
                 weather.vpd_approx[g_idx, d_idx],
             ])
-            probs[:, d_idx] = self.predictor.predict_probabilities(X)
+            day_probs, day_stab = self.predictor.predict_with_stability(X)
+            probs[:, d_idx] = day_probs
+            stability[:, d_idx] = day_stab.astype(np.float16)
 
-        return probs
+        return probs, stability
+
+    def _compute_confidence(
+        self,
+        stability: np.ndarray,
+        day_indices: np.ndarray,
+        is_stale: bool,
+        extra_factor: float = 1.0,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Combine ensemble stability, forecast horizon decay, and data freshness into `(pct, level)`."""
+        horizon_factor = np.clip(
+            1.0 - day_indices.astype(np.float32) * self.settings.confidence_horizon_decay_per_day,
+            0.35,
+            1.0,
+        )
+        freshness_factor = max(0.5, 1.0 - self.settings.confidence_stale_penalty) if is_stale else 1.0
+        conf_pct = np.clip(
+            stability.astype(np.float32) * horizon_factor * freshness_factor * float(extra_factor) * 100.0,
+            5.0,
+            99.0,
+        )
+        conf_levels = np.where(
+            conf_pct >= self.settings.confidence_high_cutoff,
+            "Alta",
+            np.where(conf_pct >= self.settings.confidence_medium_cutoff, "Media", "Baja"),
+        )
+        return conf_pct, conf_levels
 
     def query_geojson(
         self,
@@ -313,6 +352,9 @@ class ForecastService:
         rain30_s = w.lluvia_acum_30d[g_sel, d_sel]
         dry_s = w.dias_consecutivos_sin_lluvia[g_sel, d_sel]
         vpd_s = w.vpd_approx[g_sel, d_sel]
+        conf_pct_s, conf_lvl_s = self._compute_confidence(
+            cached.stability[sel, d_sel], d_sel, cached.is_stale
+        )
 
         features = [
             {
@@ -325,6 +367,8 @@ class ForecastService:
                     "cell_id": int(b.cell_id[i]),
                     "riesgo_pct": round(float(prob[i]) * 100.0, 2),
                     "categoria": str(cats[i]),
+                    "confianza_pct": int(round(float(conf_pct_s[k]))),
+                    "confianza_nivel": str(conf_lvl_s[k]),
                     "tmax_c": round(float(tmax_s[k]), 1),
                     "rh_pct": round(float(rh_s[k]), 0),
                     "wind_kmh": round(float(wind_s[k]), 1),
@@ -517,6 +561,11 @@ class ForecastService:
             top = np.argpartition(p_spread[sel], -20_000)[-20_000:]
             sel = sel[top]
 
+        d_sel = np.full(len(sel), idx, dtype=np.int32)
+        conf_pct_s, conf_lvl_s = self._compute_confidence(
+            cached.stability[sel, idx], d_sel, cached.is_stale, extra_factor=0.9
+        )
+
         features = [
             {
                 "type": "Feature",
@@ -530,10 +579,12 @@ class ForecastService:
                     "riesgo_base_pct": round(float(p_risk[i]) * 100.0, 2),
                     "riesgo_fusionado_pct": round(float(p_fused[i]) * 100.0, 2),
                     "categoria": str(cats[i]),
+                    "confianza_pct": int(round(float(conf_pct_s[k]))),
+                    "confianza_nivel": str(conf_lvl_s[k]),
                     "horizon_hours": int(horizon_days * 24),
                 },
             }
-            for i in sel.tolist()
+            for k, i in enumerate(sel.tolist())
         ]
 
         return {

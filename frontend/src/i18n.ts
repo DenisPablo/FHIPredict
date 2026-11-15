@@ -4,7 +4,7 @@ export type Lang = 'es' | 'en';
 
 export const COPY = {
   es: {
-    title: 'FuegoContinuo · Predictivo',
+    title: 'FHIPredict · Predictivo',
     loadingForecast: 'Cargando pronóstico Open-Meteo...',
     firstLoadTitle: 'Preparando pronóstico inicial',
     firstLoadHint: 'La primera carga consulta Open-Meteo y evalúa 64.653 celdas; puede demorar unos segundos.',
@@ -77,7 +77,7 @@ export const COPY = {
     },
   },
   en: {
-    title: 'FuegoContinuo · Forecast',
+    title: 'FHIPredict · Forecast',
     loadingForecast: 'Loading Open-Meteo forecast...',
     firstLoadTitle: 'Preparing initial forecast',
     firstLoadHint: 'The first load fetches Open-Meteo and scores 64,653 cells; this may take a few seconds.',

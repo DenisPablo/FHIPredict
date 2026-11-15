@@ -51,13 +51,15 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/spread")
     async def spread(
-        horizon_hours: Literal[24, 48, 72] = 24,
+        horizon_hours: int = Query(default=24, ge=24, le=72),
         day_offset: int = Query(default=0, ge=0, le=15),
         min_risk: Literal["Bajo", "Moderado", "Alto", "Extremo"] = "Moderado",
         bbox: str | None = None,
         refresh: bool = False,
     ):
         assert _service is not None
+        if horizon_hours not in (24, 48, 72):
+            raise HTTPException(status_code=400, detail="horizon_hours must be 24, 48, or 72")
         if _service.spread_predictor is None:
             raise HTTPException(status_code=503, detail="Spread model is not enabled or bundle is missing")
 

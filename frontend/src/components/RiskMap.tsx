@@ -29,8 +29,8 @@ const SOURCE_ID = 'fire-risk-cells';
 const LAYER_ID = 'fire-risk-circles';
 const TERRAIN_SOURCE_ID = 'terrain-dem';
 const HILLSHADE_LAYER_ID = 'terrain-hillshade';
-const ROADS_SOURCE_ID = 'carto-dark-roads';
-const ROADS_LAYER_ID = 'carto-dark-roads-layer';
+const ROADS_SOURCE_ID = 'ign-hibrido-roads';
+const ROADS_LAYER_ID = 'ign-hibrido-roads-layer';
 
 export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -274,9 +274,12 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
       if (!map.getSource(ROADS_SOURCE_ID)) {
         map.addSource(ROADS_SOURCE_ID, {
           type: 'raster',
-          tiles: ['https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'],
+          tiles: [
+            'https://wms.ign.gob.ar/geoserver/gwc/service/tms/1.0.0/mapabase_hibrido@EPSG%3A3857@png/{z}/{x}/{y}.png',
+          ],
+          scheme: 'tms',
           tileSize: 256,
-          attribution: '© OpenStreetMap · © CARTO',
+          attribution: '© IGN Argentina · Mapa Híbrido',
         });
       }
       if (!map.getLayer(ROADS_LAYER_ID)) {
@@ -286,7 +289,7 @@ export function RiskMap({ data, lang, flyTarget }: RiskMapProps) {
             id: ROADS_LAYER_ID,
             type: 'raster',
             source: ROADS_SOURCE_ID,
-            paint: { 'raster-opacity': 0.85 },
+            paint: { 'raster-opacity': 0.92 },
           },
           beforeId,
         );
